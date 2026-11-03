@@ -1,0 +1,1921 @@
+# -*- coding: utf-8 -*-
+"""
+===========================================================================
+UPEL – Sistema de Oferta Academica  |  Prototipo Interactivo v1.0
+Framework: Flet  |  Nucleo: Palo Verde  |  Periodo: 2026-2
+Integrado con Backend SQLite, Carga Multi-Formato (.xlsx, .docx, .txt)
+y Generador de Reportes HTML / PDF Imprimibles.
+===========================================================================
+"""
+import os
+import sqlite3
+import unicodedata
+import webbrowser
+from datetime import datetime
+import flet as ft
+from typing import Dict, List, Optional, Tuple
+
+from database import (
+    init_db,
+    get_connection,
+    clear_all_data,
+    get_or_create_facultad,
+    get_or_create_carrera,
+    get_or_create_profesor,
+    get_or_create_materia,
+    get_or_create_salon,
+)
+from parsers import importar_excel, importar_docx, importar_txt
+from scheduler import generar_horarios_automaticos
+
+
+def importar_archivo(filepath: str) -> Dict:
+    ext = os.path.splitext(filepath)[1].lower()
+    if ext == ".xlsx":
+        res = importar_excel(filepath)
+    elif ext == ".docx":
+        res = importar_docx(filepath)
+    elif ext in (".txt", ".csv"):
+        res = importar_txt(filepath)
+    else:
+        raise ValueError(f"Formato no soportado: {ext}")
+    return {"procesados": res.get("insertados", 0), "errores": res.get("errores", [])}
+
+# ═══════════════════════════════════════════════════════
+#  HELPERS para border / padding / margin
+# ═══════════════════════════════════════════════════════
+
+def _ba(w: float, c: str) -> ft.Border:
+    s = ft.BorderSide(w, c)
+    return ft.Border(top=s, right=s, bottom=s, left=s)
+
+def _br(w: float, c: str) -> ft.Border:
+    return ft.Border(right=ft.BorderSide(w, c))
+
+def _bb(w: float, c: str) -> ft.Border:
+    return ft.Border(bottom=ft.BorderSide(w, c))
+
+def _pa(v: float) -> ft.Padding:
+    return ft.Padding(left=v, top=v, right=v, bottom=v)
+
+def _ps(h: float = 0, v: float = 0) -> ft.Padding:
+    return ft.Padding(left=h, top=v, right=h, bottom=v)
+
+def _po(left=0, top=0, right=0, bottom=0) -> ft.Padding:
+    return ft.Padding(left=left, top=top, right=right, bottom=bottom)
+
+def _ma(v: float) -> ft.Margin:
+    return ft.Margin(left=v, top=v, right=v, bottom=v)
+
+def _ms(h: float = 0, v: float = 0) -> ft.Margin:
+    return ft.Margin(left=h, top=v, right=h, bottom=v)
+
+def _mo(left=0, top=0, right=0, bottom=0) -> ft.Margin:
+    return ft.Margin(left=left, top=top, right=right, bottom=bottom)
+
+# ═══════════════════════════════════════════════════════
+#  PALETA Y CONFIGURACIÓN
+# ═══════════════════════════════════════════════════════
+
+BG_P  = "#0D1B2A"   # primario
+BG_C  = "#152235"   # cards
+BG_SB = "#0A1628"   # sidebar
+BG_IN = "#1A2F45"   # inputs
+BG_RA = "#12203A"   # filas alternas
+
+BLUE  = "#2196F3"
+PURP  = "#7C4DFF"
+GRN   = "#00E676"
+ORG   = "#FF9800"
+RED   = "#FF5252"
+CYAN  = "#00BCD4"
+
+TW    = "#FFFFFF"
+TG    = "#78909C"
+TL    = "#B0BEC5"
+BOR   = "#1E3A52"
+
+MAX_EST = 45
+MAX_AMB = 30
+
+DIAS    = ["LUNES","MARTES","MIERCOLES","JUEVES","VIERNES","SABADO"]
+FRANJAS = [
+    "07:40-09:20","09:20-10:50","10:50-12:10",
+    "12:30-01:50","02:10-03:30","03:40-05:00","05:00-06:20",
+]
+
+AMBIENTES_BASE: List[str] = (
+    [f"P{p}-{n:02d}" for p in range(1,5) for n in range(1,8)]
+    + ["VIRTUAL-01","VIRTUAL-02"]
+)
+AMBIENTES: List[str] = list(AMBIENTES_BASE)
+
+PERIODOS = ["2026-2","2026-1","2025-2","2025-1"]
+
+PALETA_CARRERAS = [
+    "#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4", "#FFEAA7",
+    "#DDA0DD", "#FF9F43", "#54A0FF", "#1DD1A1", "#F368E0",
+]
+
+CARRERAS_BASE: Dict[str,Dict] = {
+    "EDUC_INIC":   {"nombre":"Educacion Inicial",        "mencion":"Sin Mencion",              "color":"#FF6B6B"},
+    "EDUC_INTEG":  {"nombre":"Educacion Integral",       "mencion":"Sin Mencion",              "color":"#4ECDC4"},
+    "EDUC_MATEM":  {"nombre":"Educ. Mencion Matematica", "mencion":"Docencia en Matematica",   "color":"#45B7D1"},
+    "EDUC_INGLES": {"nombre":"Educ. Mencion Ingles",     "mencion":"Docencia en Ingles",       "color":"#96CEB4"},
+    "ORGAN_SIS":   {"nombre":"Organizacion y Sistemas",  "mencion":"Sin Mencion",              "color":"#FFEAA7"},
+    "RRHH":        {"nombre":"Recursos Humanos",         "mencion":"Sin Mencion",              "color":"#DDA0DD"},
+}
+CARRERAS: Dict[str,Dict] = {k: dict(v) for k, v in CARRERAS_BASE.items()}
+
+DOCENTES_BASE = [
+    "ADA URSULINA BRITO CARDENAS","MARYELIN ALEJANDRA GONZALEZ",
+    "REYNA DEL CARMEN HURTADO DE VILLARROEL","FELIPA ECHEZURIA",
+    "LILIANA MERCEDES MONASTERIO BLANCO","INGRID JOSEFINA BORGES OROPEZA",
+    "EMMA JOSEFINA MANEIRO","LOURDES ELENA MANRIQUE RIOS",
+    "JOSE FRANCISCO LUZONDO RIVAS","ANIBAL JOSE GARCIA ESCORIHUELA",
+    "GABRIEL SEGUNDO LEAL PENALOZA","EVA CRISTINA REVERAND PEREZ",
+    "JORGE LUIS DE MOYA PUERTA","CARLOS JESUS PACHECO ISAVA",
+    "CELMIS COROMOTO GUERRERO MANCILLA","THAIS DEL CARMEN GALEA",
+    "ANTONIO DE JESUS DELGADO","NELLY MEDINA DE PRADO",
+    "JUSETH FELIX GONZALEZ LAREZ","JOSE DE JESUS GONZALEZ RODRIGUEZ",
+    "LAURA PATRICIA SOSA HERNANDEZ","CARLOS ALBERTO FIGUEROA RAMOS",
+]
+DOCENTES: List[str] = list(DOCENTES_BASE)
+
+MATERIAS_BASE: Dict[str,List[Dict]] = {
+    "EDUC_INIC":[
+        {"nombre":"ESTRATEGIAS COGNITIVAS",        "horas":3,"ciclo":"INTRODUCTORIO"},
+        {"nombre":"INICIACION UNIVERSITARIA",       "horas":2,"ciclo":"INTRODUCTORIO"},
+        {"nombre":"USO DE LAS TIC",                "horas":2,"ciclo":"INTRODUCTORIO"},
+        {"nombre":"LENGUAJE Y COMUNICACION",       "horas":2,"ciclo":"INTRODUCTORIO"},
+        {"nombre":"ETICA VALORES AUTOBIOGRAFIA",   "horas":2,"ciclo":"INTRODUCTORIO"},
+        {"nombre":"PENSAMIENTO ROBINSONIANO",      "horas":2,"ciclo":"INTRODUCTORIO"},
+        {"nombre":"DIDACTICA I",                   "horas":3,"ciclo":"BASICO"},
+        {"nombre":"PSICOLOGIA DEL DESARROLLO",     "horas":3,"ciclo":"BASICO"},
+        {"nombre":"PRACTICA DOCENTE I",            "horas":4,"ciclo":"PROFESIONAL"},
+    ],
+    "EDUC_INTEG":[
+        {"nombre":"SEMINARIO DE INICIACION",       "horas":2,"ciclo":"INTRODUCTORIO"},
+        {"nombre":"MATEMATICA I",                  "horas":2,"ciclo":"INTRODUCTORIO"},
+        {"nombre":"LENGUAJE Y COMUNICACION",       "horas":2,"ciclo":"INTRODUCTORIO"},
+        {"nombre":"ETICA VALORES AUTOBIOGRAFIA",   "horas":2,"ciclo":"INTRODUCTORIO"},
+        {"nombre":"PENSAMIENTO ROBINSONIANO",      "horas":2,"ciclo":"INTRODUCTORIO"},
+        {"nombre":"PENSAMIENTO ANDRAGOGICO",       "horas":2,"ciclo":"INTRODUCTORIO"},
+        {"nombre":"GEOGRAFIA DE VENEZUELA",        "horas":3,"ciclo":"BASICO"},
+        {"nombre":"DIDACTICA GENERAL",             "horas":3,"ciclo":"BASICO"},
+    ],
+    "EDUC_MATEM":[
+        {"nombre":"CALCULO IV",                    "horas":3,"ciclo":"PROFESIONAL"},
+        {"nombre":"GEOMETRIA II",                  "horas":4,"ciclo":"PROFESIONAL"},
+        {"nombre":"ALGEBRA III",                   "horas":3,"ciclo":"PROFESIONAL"},
+        {"nombre":"PROYECTO I",                    "horas":6,"ciclo":"PROFESIONAL"},
+        {"nombre":"PROYECTO II",                   "horas":6,"ciclo":"PROFESIONAL"},
+        {"nombre":"SEMINARIO ESPECIAL DE GRADO",   "horas":4,"ciclo":"PROFESIONAL"},
+        {"nombre":"PRECALCULO",                    "horas":3,"ciclo":"INTRODUCTORIO"},
+        {"nombre":"ALGEBRA LINEAL",                "horas":3,"ciclo":"BASICO"},
+    ],
+    "EDUC_INGLES":[
+        {"nombre":"INICIACION UNIVERSITARIA",      "horas":2,"ciclo":"INTRODUCTORIO"},
+        {"nombre":"LENGUAJE Y COMUNICACION",       "horas":2,"ciclo":"INTRODUCTORIO"},
+        {"nombre":"METODOS Y TECNICAS DE ESTUDIO", "horas":2,"ciclo":"INTRODUCTORIO"},
+        {"nombre":"PRECALCULO",                    "horas":3,"ciclo":"INTRODUCTORIO"},
+        {"nombre":"ETICA VALORES AUTOBIOGRAFIA",   "horas":2,"ciclo":"INTRODUCTORIO"},
+        {"nombre":"ENGLISH I",                     "horas":4,"ciclo":"BASICO"},
+        {"nombre":"ENGLISH II",                    "horas":4,"ciclo":"BASICO"},
+        {"nombre":"PHONETICS AND PHONOLOGY",       "horas":3,"ciclo":"PROFESIONAL"},
+    ],
+    "ORGAN_SIS":[
+        {"nombre":"INICIACION UNIVERSITARIA",      "horas":2,"ciclo":"INTRODUCTORIO"},
+        {"nombre":"LENGUAJE Y COMUNICACION",       "horas":2,"ciclo":"INTRODUCTORIO"},
+        {"nombre":"METODOS Y TECNICAS DE ESTUDIO", "horas":2,"ciclo":"INTRODUCTORIO"},
+        {"nombre":"PRECALCULO",                    "horas":3,"ciclo":"INTRODUCTORIO"},
+        {"nombre":"ETICA VALORES AUTOBIOGRAFIA",   "horas":2,"ciclo":"INTRODUCTORIO"},
+        {"nombre":"PENSAMIENTO ROBINSONIANO",      "horas":2,"ciclo":"INTRODUCTORIO"},
+        {"nombre":"SISTEMAS DE INFORMACION",       "horas":3,"ciclo":"BASICO"},
+        {"nombre":"ADMINISTRACION I",              "horas":3,"ciclo":"BASICO"},
+    ],
+    "RRHH":[
+        {"nombre":"INICIACION UNIVERSITARIA",      "horas":2,"ciclo":"INTRODUCTORIO"},
+        {"nombre":"LENGUAJE Y COMUNICACION",       "horas":2,"ciclo":"INTRODUCTORIO"},
+        {"nombre":"RELACIONES INDUSTRIALES",       "horas":3,"ciclo":"BASICO"},
+        {"nombre":"PSICOLOGIA ORGANIZACIONAL",     "horas":3,"ciclo":"BASICO"},
+        {"nombre":"GESTION DEL TALENTO HUMANO",    "horas":3,"ciclo":"PROFESIONAL"},
+        {"nombre":"DERECHO LABORAL",               "horas":3,"ciclo":"PROFESIONAL"},
+        {"nombre":"PROYECTO COMUNITARIO",          "horas":6,"ciclo":"PROFESIONAL"},
+    ],
+}
+MATERIAS: Dict[str,List[Dict]] = {k: [dict(m) for m in v] for k, v in MATERIAS_BASE.items()}
+
+
+def _sin_acentos(txt: str) -> str:
+    if not txt:
+        return ""
+    return "".join(
+        c for c in unicodedata.normalize("NFD", str(txt))
+        if unicodedata.category(c) != "Mn"
+    ).upper().strip()
+
+
+def _mapear_carrera_id(nombre_carrera: str, facultad_nombre: str = "") -> str:
+    nc = _sin_acentos(nombre_carrera)
+    if "INICIAL" in nc or "INIC" in nc:
+        return "EDUC_INIC"
+    if "INTEGRAL" in nc or "INTEG" in nc:
+        return "EDUC_INTEG"
+    if "MATEM" in nc:
+        return "EDUC_MATEM"
+    if "INGLES" in nc:
+        return "EDUC_INGLES"
+    if "ORGANIZACION" in nc or "SISTEMA" in nc or "OYS" in nc:
+        return "ORGAN_SIS"
+    if "RECURSOS HUMANOS" in nc or "RRHH" in nc:
+        return "RRHH"
+    # Crear clave dinámica si viene otra carrera desde Excel/Word/TXT (ej. Mercadeo, Informática, RMF)
+    clave = "".join(ch if ch.isalnum() else "_" for ch in nc)[:14].strip("_") or "GEN"
+    if clave not in CARRERAS:
+        color = PALETA_CARRERAS[len(CARRERAS) % len(PALETA_CARRERAS)]
+        CARRERAS[clave] = {
+            "nombre": nombre_carrera.strip().title(),
+            "mencion": facultad_nombre.strip().title() if facultad_nombre else "Pregrado",
+            "color": color,
+        }
+    return clave
+
+
+# ═══════════════════════════════════════════════════════
+#  MOTOR DE HORARIOS SIN CONFLICTOS + BACKEND SQLITE
+# ═══════════════════════════════════════════════════════
+
+class Motor:
+    def __init__(self):
+        self._sa: Dict[Tuple,dict] = {}
+        self._sd: Dict[Tuple,bool] = {}
+        self._u:  set              = set()
+        self._lista: List[Dict]    = []
+
+    def limpiar_memoria(self):
+        self._sa.clear()
+        self._sd.clear()
+        self._u.clear()
+        self._lista.clear()
+
+    def _slot(self, doc: str, dia_pref: str = "", franja_pref: str = "", amb_pref: str = "") -> Optional[Dict]:
+        # Si viene con día/franja/ambiente desde archivo o preferencia, intentar asignarlo
+        d_norm = _sin_acentos(dia_pref)
+        if d_norm in DIAS and franja_pref:
+            a_elegido = amb_pref.strip().upper() if amb_pref else ""
+            if a_elegido and a_elegido not in AMBIENTES:
+                AMBIENTES.append(a_elegido)
+            if a_elegido and ((d_norm, franja_pref, a_elegido) not in self._sa or "VIRTUAL" in a_elegido or "COORD" in a_elegido):
+                return {"dia": d_norm, "franja": franja_pref, "ambiente": a_elegido}
+            for a in AMBIENTES:
+                if (d_norm, franja_pref, a) not in self._sa:
+                    return {"dia": d_norm, "franja": franja_pref, "ambiente": a}
+
+        # Asignación automática sin conflictos
+        for d in DIAS:
+            for f in FRANJAS:
+                if (d, f, doc) in self._sd:
+                    continue
+                for a in AMBIENTES:
+                    if (d, f, a) not in self._sa:
+                        return {"dia": d, "franja": f, "ambiente": a}
+        return None
+
+    def registrar(self, datos: Dict, guardar_bd: bool = True) -> Dict:
+        sl = self._slot(
+            datos["docente"],
+            datos.get("dia_fijo", ""),
+            datos.get("franja_fija", ""),
+            datos.get("ambiente_fijo", ""),
+        )
+        if sl is None:
+            return {**datos, "_error": "Sin slots disponibles"}
+        try:
+            hora_int = int(sl["franja"][:2])
+        except Exception:
+            hora_int = 8
+        am = "AM" if hora_int in (7, 8, 9, 10, 11) else "PM"
+        e = {
+            **datos,
+            "dia": sl["dia"],
+            "franja": sl["franja"],
+            "ambiente": sl["ambiente"],
+            "am_pm": am,
+            "cupo": MAX_EST,
+            "_error": None,
+        }
+        # Guardar clave única en _sa (si es curso compartido o virtual, usar sufijo para no sobrescribir)
+        key_sa = (sl["dia"], sl["franja"], sl["ambiente"])
+        if key_sa in self._sa:
+            key_sa = (sl["dia"], sl["franja"], f"{sl['ambiente']}#{len(self._lista)}")
+        self._sa[key_sa] = e
+        self._sd[(sl["dia"], sl["franja"], datos["docente"])] = True
+        self._u.add(sl["ambiente"])
+        self._lista.append(e)
+
+        # Actualizar catálogos en memoria para dropdowns y vistas
+        if datos["docente"] not in DOCENTES:
+            DOCENTES.append(datos["docente"])
+            DOCENTES.sort()
+        cid = datos["carrera_id"]
+        MATERIAS.setdefault(cid, [])
+        if not any(m["nombre"].upper() == datos["materia"].upper() for m in MATERIAS[cid]):
+            MATERIAS[cid].append({
+                "nombre": datos["materia"],
+                "horas": int(datos.get("horas", 2)),
+                "ciclo": datos.get("ciclo", "INTRODUCTORIO"),
+            })
+
+        if guardar_bd:
+            self._persistir_en_sqlite(e)
+        return e
+
+    def _persistir_en_sqlite(self, e: Dict):
+        try:
+            conn = get_connection()
+            cur = conn.cursor()
+            ci = CARRERAS.get(e["carrera_id"], {"nombre": e["carrera_id"], "mencion": "General"})
+            fac_nombre = "Facultad de Ciencias de la Educación" if "EDUC" in e["carrera_id"] else "Facultad de Ciencias Económicas y Sociales"
+            fac_id = get_or_create_facultad(cur, fac_nombre)
+            car_id = get_or_create_carrera(cur, ci["nombre"], fac_id)
+            prof_id = get_or_create_profesor(cur, e["docente"])
+            mat_id = get_or_create_materia(cur, e["materia"], car_id, semestre=str(e.get("ciclo", "INTRODUCTORIO")))
+            sal_id = get_or_create_salon(cur, e["ambiente"], capacidad=MAX_EST, edificio="Núcleo Palo Verde")
+
+            partes_f = e["franja"].split("-")
+            h_ini = partes_f[0].strip() if len(partes_f) > 0 else "07:40"
+            h_fin = partes_f[1].strip() if len(partes_f) > 1 else "09:20"
+            dia_bd = {
+                "LUNES": "Lunes", "MARTES": "Martes", "MIERCOLES": "Miércoles",
+                "JUEVES": "Jueves", "VIERNES": "Viernes", "SABADO": "Sábado",
+            }.get(e["dia"], e["dia"].title())
+
+            cur.execute(
+                """
+                INSERT OR IGNORE INTO disponibilidades (profesor_id, dia, hora_inicio, hora_fin)
+                VALUES (?, ?, ?, ?)
+                """,
+                (prof_id, dia_bd, h_ini, h_fin),
+            )
+            cur.execute(
+                """
+                INSERT INTO carga_academica
+                (profesor_id, materia_id, seccion, bloques_semanales, salon_preferido, dia_fijo, hora_inicio_fija, hora_fin_fija)
+                VALUES (?, ?, ?, 1, ?, ?, ?, ?)
+                ON CONFLICT(profesor_id, materia_id, seccion) DO UPDATE SET
+                    salon_preferido = excluded.salon_preferido,
+                    dia_fijo = excluded.dia_fijo,
+                    hora_inicio_fija = excluded.hora_inicio_fija,
+                    hora_fin_fija = excluded.hora_fin_fija
+                """,
+                (prof_id, mat_id, str(e.get("seccion", "10100")), e["ambiente"], dia_bd, h_ini, h_fin),
+            )
+            cur.execute(
+                "SELECT id FROM carga_academica WHERE profesor_id=? AND materia_id=? AND seccion=?",
+                (prof_id, mat_id, str(e.get("seccion", "10100"))),
+            )
+            row_c = cur.fetchone()
+            if row_c:
+                cur.execute(
+                    """
+                    INSERT INTO asignaciones_horario
+                    (carga_id, profesor_id, materia_id, salon_id, dia, hora_inicio, hora_fin, estado)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'Confirmado')
+                    """,
+                    (row_c["id"], prof_id, mat_id, sal_id, dia_bd, h_ini, h_fin),
+                )
+            conn.commit()
+            conn.close()
+        except Exception as ex:
+            print(f"Aviso SQLite: {ex}")
+
+    def sincronizar_desde_sqlite(self) -> List[Dict]:
+        """Carga en el Motor todos los horarios almacenados en SQLite (por ejemplo tras importar Excel/Word/TXT)."""
+        self.limpiar_memoria()
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT
+                p.nombre AS docente,
+                m.nombre AS materia,
+                m.semestre AS ciclo,
+                c.nombre AS carrera_nombre,
+                f.nombre AS facultad_nombre,
+                ca.seccion AS seccion,
+                ca.bloques_semanales AS horas,
+                s.codigo AS ambiente,
+                ah.dia AS dia,
+                ah.hora_inicio AS hora_inicio,
+                ah.hora_fin AS hora_fin
+            FROM asignaciones_horario ah
+            JOIN profesores p ON p.id = ah.profesor_id
+            JOIN materias m ON m.id = ah.materia_id
+            JOIN carreras c ON c.id = m.carrera_id
+            JOIN facultades f ON f.id = c.facultad_id
+            JOIN carga_academica ca ON ca.id = ah.carga_id
+            JOIN salones s ON s.id = ah.salon_id
+            ORDER BY p.nombre ASC, c.nombre ASC, ah.dia ASC, ah.hora_inicio ASC
+        """)
+        rows = [dict(r) for r in cur.fetchall()]
+        conn.close()
+
+        for r in rows:
+            cid = _mapear_carrera_id(r["carrera_nombre"], r["facultad_nombre"])
+            franja = f"{r['hora_inicio']}-{r['hora_fin']}"
+            if franja not in FRANJAS:
+                FRANJAS.append(franja)
+            dia_up = _sin_acentos(r["dia"])
+            if dia_up not in DIAS and dia_up:
+                DIAS.append(dia_up)
+            amb_up = (r["ambiente"] or "P1-01").strip().upper()
+            if amb_up not in AMBIENTES:
+                AMBIENTES.append(amb_up)
+
+            ciclo_raw = _sin_acentos(r["ciclo"] or "INTRODUCTORIO")
+            if "PROF" in ciclo_raw:
+                ciclo_limpio = "PROFESIONAL"
+            elif "BASI" in ciclo_raw or "GEN" in ciclo_raw:
+                ciclo_limpio = "BASICO"
+            else:
+                ciclo_limpio = "INTRODUCTORIO"
+
+            datos = {
+                "carrera_id": cid,
+                "docente": r["docente"].strip().upper(),
+                "materia": r["materia"].strip().upper(),
+                "horas": int(r["horas"] or 2),
+                "ciclo": ciclo_limpio,
+                "seccion": r["seccion"] or "10100",
+                "periodo": "2026-2",
+                "dia_fijo": dia_up,
+                "franja_fija": franja,
+                "ambiente_fijo": amb_up,
+            }
+            self.registrar(datos, guardar_bd=False)
+
+        DOCENTES.sort()
+        return list(self._lista)
+
+    def entradas(self) -> List[Dict]:
+        return list(self._lista)
+
+    def usados(self) -> set:
+        return set(self._u)
+
+    def stats(self) -> Dict:
+        t = self.entradas()
+        total_amb = max(MAX_AMB, len(AMBIENTES))
+        return {
+            "cursos":  len(t),
+            "amb_uso": len(self._u),
+            "amb_lib": max(0, total_amb - len(self._u)),
+            "amb_tot": total_amb,
+            "docs":    len({e["docente"] for e in t}),
+        }
+
+
+ROWS_SEED = [
+    ("EDUC_INIC",  "ADA URSULINA BRITO CARDENAS",            "ESTRATEGIAS COGNITIVAS",       3,"INTRODUCTORIO",10100),
+    ("EDUC_INIC",  "ADA URSULINA BRITO CARDENAS",            "INICIACION UNIVERSITARIA",      2,"INTRODUCTORIO",10100),
+    ("EDUC_INIC",  "MARYELIN ALEJANDRA GONZALEZ",            "USO DE LAS TIC",               2,"INTRODUCTORIO",10100),
+    ("EDUC_INIC",  "REYNA DEL CARMEN HURTADO DE VILLARROEL", "LENGUAJE Y COMUNICACION",      2,"INTRODUCTORIO",10100),
+    ("EDUC_INIC",  "FELIPA ECHEZURIA",                       "ETICA VALORES AUTOBIOGRAFIA",  2,"INTRODUCTORIO",10100),
+    ("EDUC_INIC",  "FELIPA ECHEZURIA",                       "PENSAMIENTO ROBINSONIANO",     2,"INTRODUCTORIO",10100),
+    ("EDUC_INTEG", "LILIANA MERCEDES MONASTERIO BLANCO",     "SEMINARIO DE INICIACION",      2,"INTRODUCTORIO",10100),
+    ("EDUC_INTEG", "INGRID JOSEFINA BORGES OROPEZA",         "MATEMATICA I",                 2,"INTRODUCTORIO",10100),
+    ("EDUC_INTEG", "EMMA JOSEFINA MANEIRO",                  "LENGUAJE Y COMUNICACION",      2,"INTRODUCTORIO",10100),
+    ("EDUC_INTEG", "LOURDES ELENA MANRIQUE RIOS",            "ETICA VALORES AUTOBIOGRAFIA",  2,"INTRODUCTORIO",10100),
+    ("EDUC_INTEG", "JOSE FRANCISCO LUZONDO RIVAS",           "PENSAMIENTO ROBINSONIANO",     2,"INTRODUCTORIO",10100),
+    ("EDUC_INTEG", "JOSE FRANCISCO LUZONDO RIVAS",           "PENSAMIENTO ANDRAGOGICO",      2,"INTRODUCTORIO",10100),
+    ("EDUC_MATEM", "ANIBAL JOSE GARCIA ESCORIHUELA",         "CALCULO IV",                   3,"PROFESIONAL",  20112),
+    ("EDUC_MATEM", "GABRIEL SEGUNDO LEAL PENALOZA",          "GEOMETRIA II",                 4,"PROFESIONAL",  20102),
+    ("EDUC_MATEM", "ANIBAL JOSE GARCIA ESCORIHUELA",         "ALGEBRA III",                  3,"PROFESIONAL",  20203),
+    ("EDUC_MATEM", "EVA CRISTINA REVERAND PEREZ",            "PROYECTO I",                   6,"PROFESIONAL",  20203),
+    ("EDUC_MATEM", "EVA CRISTINA REVERAND PEREZ",            "PROYECTO II",                  6,"PROFESIONAL",  20111),
+    ("EDUC_MATEM", "EVA CRISTINA REVERAND PEREZ",            "SEMINARIO ESPECIAL DE GRADO",  4,"PROFESIONAL",  20212),
+    ("EDUC_INGLES","JORGE LUIS DE MOYA PUERTA",              "INICIACION UNIVERSITARIA",      2,"INTRODUCTORIO",10200),
+    ("EDUC_INGLES","CARLOS JESUS PACHECO ISAVA",             "LENGUAJE Y COMUNICACION",      2,"INTRODUCTORIO",10200),
+    ("EDUC_INGLES","ADA URSULINA BRITO CARDENAS",            "METODOS Y TECNICAS DE ESTUDIO",2,"INTRODUCTORIO",10200),
+    ("EDUC_INGLES","CELMIS COROMOTO GUERRERO MANCILLA",      "PRECALCULO",                   3,"INTRODUCTORIO",10200),
+    ("EDUC_INGLES","LOURDES ELENA MANRIQUE RIOS",            "ETICA VALORES AUTOBIOGRAFIA",  2,"INTRODUCTORIO",10200),
+    ("EDUC_INGLES","THAIS DEL CARMEN GALEA",                 "PENSAMIENTO ROBINSONIANO",     2,"INTRODUCTORIO",10200),
+    ("ORGAN_SIS",  "ANTONIO DE JESUS DELGADO",               "INICIACION UNIVERSITARIA",      2,"INTRODUCTORIO",20100),
+    ("ORGAN_SIS",  "CARLOS JESUS PACHECO ISAVA",             "LENGUAJE Y COMUNICACION",      2,"INTRODUCTORIO",20100),
+    ("ORGAN_SIS",  "NELLY MEDINA DE PRADO",                  "METODOS Y TECNICAS DE ESTUDIO",2,"INTRODUCTORIO",20100),
+    ("ORGAN_SIS",  "JUSETH FELIX GONZALEZ LAREZ",            "PRECALCULO",                   3,"INTRODUCTORIO",20100),
+    ("ORGAN_SIS",  "ANTONIO DE JESUS DELGADO",               "ETICA VALORES AUTOBIOGRAFIA",  2,"INTRODUCTORIO",20100),
+    ("ORGAN_SIS",  "JOSE DE JESUS GONZALEZ RODRIGUEZ",       "PENSAMIENTO ROBINSONIANO",     2,"INTRODUCTORIO",20100),
+    ("RRHH",       "LAURA PATRICIA SOSA HERNANDEZ",          "INICIACION UNIVERSITARIA",      2,"INTRODUCTORIO",30100),
+    ("RRHH",       "CARLOS ALBERTO FIGUEROA RAMOS",          "LENGUAJE Y COMUNICACION",      2,"INTRODUCTORIO",30100),
+    ("RRHH",       "GABRIEL SEGUNDO LEAL PENALOZA",          "RELACIONES INDUSTRIALES",      3,"BASICO",        30201),
+]
+
+
+def _seed_data(forzar_base: bool = False) -> Tuple[Motor, List[Dict]]:
+    init_db()
+    m = Motor()
+    if not forzar_base:
+        existentes = m.sincronizar_desde_sqlite()
+        if existentes:
+            return m, existentes
+
+    clear_all_data(keep_salones=False)
+    CARRERAS.clear()
+    CARRERAS.update({k: dict(v) for k, v in CARRERAS_BASE.items()})
+    DOCENTES.clear()
+    DOCENTES.extend(sorted(DOCENTES_BASE))
+    AMBIENTES.clear()
+    AMBIENTES.extend(AMBIENTES_BASE)
+
+    datos = [
+        {"carrera_id":r[0],"docente":r[1],"materia":r[2],"horas":r[3], "ciclo":r[4],"seccion":r[5],"periodo":"2026-2"}
+        for r in ROWS_SEED
+    ]
+    entries = [m.registrar(d, guardar_bd=True) for d in datos]
+    return m, entries
+
+
+# ═══════════════════════════════════════════════════════
+#  GENERADOR DE REPORTES HTML / PDF IMPRIMIBLES
+# ═══════════════════════════════════════════════════════
+
+def generar_reporte_html_imprimible(
+    entradas: List[Dict],
+    tipo: str = "completo",
+    docente_filtro: Optional[str] = None,
+) -> str:
+    """
+    Genera un archivo HTML oficial listo para imprimir o Guardar como PDF:
+    - tipo == 'oferta'   : 1) Oferta Académica General por carrera con profesores ordenados.
+    - tipo == 'profesor' : 2) Horario tipo calendario semanal (de TODOS los profesores o de 1 SOLO profesor).
+    - tipo == 'completo' : Oferta Académica General + Calendarios de Profesores.
+    """
+    carpeta = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reportes_imprimibles")
+    os.makedirs(carpeta, exist_ok=True)
+    fecha_str = datetime.now().strftime("%d/%m/%Y %H:%M")
+
+    # Profesores ordenados alfabéticamente
+    todos_docs = sorted({e["docente"] for e in entradas})
+    if docente_filtro and docente_filtro != "TODOS":
+        docs_mostrar = [d for d in todos_docs if d == docente_filtro]
+    else:
+        docs_mostrar = todos_docs
+
+    html = [f"""<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Reporte Oficial UPEL - Oferta Académica y Horarios 2026-2</title>
+<style>
+    * {{ box-sizing: border-box; }}
+    body {{
+        font-family: 'Segoe UI', Arial, sans-serif;
+        color: #0D1B2A;
+        background: #FFFFFF;
+        margin: 0;
+        padding: 24px;
+        font-size: 12px;
+    }}
+    .no-print {{
+        background: #0D1B2A;
+        color: #FFFFFF;
+        padding: 14px 20px;
+        border-radius: 10px;
+        margin-bottom: 22px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }}
+    .btn-print {{
+        background: #00E676;
+        color: #0D1B2A;
+        border: none;
+        padding: 9px 18px;
+        font-weight: bold;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 13px;
+    }}
+    .header {{
+        text-align: center;
+        border-bottom: 3px solid #0D1B2A;
+        padding-bottom: 12px;
+        margin-bottom: 20px;
+    }}
+    .header h1 {{ margin: 0; font-size: 20px; color: #0D1B2A; text-transform: uppercase; }}
+    .header p {{ margin: 3px 0; color: #455A64; font-size: 12px; }}
+    .sec-title {{
+        background: #152235;
+        color: #FFFFFF;
+        padding: 9px 14px;
+        font-weight: bold;
+        font-size: 14px;
+        border-left: 5px solid #2196F3;
+        margin: 22px 0 12px 0;
+        border-radius: 4px;
+    }}
+    .car-header {{
+        background: #E3F2FD;
+        color: #0D47A1;
+        padding: 7px 12px;
+        font-weight: bold;
+        font-size: 13px;
+        border-left: 4px solid #2196F3;
+        margin-top: 14px;
+    }}
+    table {{
+        width: 100%;
+        border-collapse: collapse;
+        margin-bottom: 16px;
+    }}
+    th, td {{
+        border: 1px solid #CFD8DC;
+        padding: 6px 8px;
+        text-align: left;
+        vertical-align: top;
+    }}
+    th {{
+        background: #ECEFF1;
+        color: #0D1B2A;
+        font-weight: bold;
+        font-size: 11px;
+        text-transform: uppercase;
+    }}
+    .cal-box {{
+        page-break-inside: avoid;
+        margin-bottom: 26px;
+        border: 1px solid #B0BEC5;
+        border-radius: 6px;
+        overflow: hidden;
+    }}
+    .cal-head {{
+        background: #0D1B2A;
+        color: #FFFFFF;
+        padding: 8px 14px;
+        font-weight: bold;
+        font-size: 13px;
+    }}
+    .slot-item {{
+        background: #F1F8E9;
+        border-left: 3px solid #2196F3;
+        padding: 4px 6px;
+        margin-bottom: 4px;
+        font-size: 10.5px;
+    }}
+    @media print {{
+        .no-print {{ display: none !important; }}
+        body {{ padding: 0; }}
+    }}
+</style>
+</head>
+<body>
+    <div class="no-print">
+        <div>
+            <strong>UPEL - Núcleo Palo Verde | Vista Oficial de Impresión HTML / PDF</strong><br>
+            <span style="font-size:11px;color:#B0BEC5;">Usa el botón derecho para imprimir en papel o elegir "Guardar como PDF".</span>
+        </div>
+        <button class="btn-print" onclick="window.print()">Imprimir / Guardar como PDF</button>
+    </div>
+
+    <div class="header">
+        <h1>Universidad Pedagógica Experimental Libertador / USR — Núcleo Palo Verde</h1>
+        <p><strong>Sistema de Oferta Académica y Horarios por Facultad y Docente — Periodo 2026-2</strong></p>
+        <p>Generado el: {fecha_str} &bull; Total asignaciones: {len(entradas)} &bull; Conflictos: 0</p>
+    </div>
+"""]
+
+    # 1) OFERTA ACADÉMICA GENERAL
+    if tipo in ("oferta", "completo"):
+        html.append('<div class="sec-title">1) OFERTA ACADÉMICA GENERAL POR CARRERA (PROFESORES ORDENADOS)</div>')
+        for kid, cinfo in CARRERAS.items():
+            cursos_car = [e for e in entradas if e.get("carrera_id") == kid]
+            if not cursos_car:
+                continue
+            cursos_car.sort(key=lambda x: (x["docente"], x["dia"], x["franja"]))
+            html.append(f'<div class="car-header">{cinfo["nombre"]} ({cinfo.get("mencion","")}) — {len(cursos_car)} cursos</div>')
+            html.append("""
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width:26%;">Docente (Orden Alfabético)</th>
+                        <th style="width:26%;">Materia / Curso</th>
+                        <th style="width:12%;">Ciclo</th>
+                        <th style="width:8%;">Sección</th>
+                        <th style="width:10%;">Día</th>
+                        <th style="width:10%;">Horario</th>
+                        <th style="width:8%;">Ambiente</th>
+                    </tr>
+                </thead>
+                <tbody>
+            """)
+            for e in cursos_car:
+                html.append(f"""
+                    <tr>
+                        <td><strong>{e['docente']}</strong></td>
+                        <td>{e['materia']}</td>
+                        <td>{e.get('ciclo','')}</td>
+                        <td>{e.get('seccion','')}</td>
+                        <td>{e['dia']}</td>
+                        <td>{e['franja']}</td>
+                        <td><strong>{e['ambiente']}</strong></td>
+                    </tr>
+                """)
+            html.append("</tbody></table>")
+
+    # 2) HORARIO TIPO CALENDARIO DE CADA PROFESOR
+    if tipo in ("profesor", "completo"):
+        sub_t = (
+            f"PROFESOR SELECCIONADO: {docente_filtro}"
+            if docente_filtro and docente_filtro != "TODOS"
+            else f"TODOS LOS PROFESORES REGISTRADOS ({len(docs_mostrar)})"
+        )
+        html.append(f'<div class="sec-title">2) HORARIO TIPO CALENDARIO SEMANAL — {sub_t}</div>')
+        dias_cols = ["LUNES", "MARTES", "MIERCOLES", "JUEVES", "VIERNES", "SABADO"]
+
+        for doc in docs_mostrar:
+            asig_doc = [e for e in entradas if e.get("docente") == doc]
+            if not asig_doc:
+                continue
+            franjas_doc = sorted(
+                list({e["franja"] for e in asig_doc} | set(FRANJAS[:7])),
+                key=lambda f: FRANJAS.index(f) if f in FRANJAS else 99,
+            )
+            html.append(f'<div class="cal-box">')
+            html.append(f'<div class="cal-head">DOCENTE: {doc} ({len(asig_doc)} bloque(s) asignados)</div>')
+            html.append("<table><thead><tr><th style='width:13%;'>HORARIO</th>")
+            for d in dias_cols:
+                html.append(f"<th style='width:14.5%;'>{d}</th>")
+            html.append("</tr></thead><tbody>")
+
+            for fr in franjas_doc:
+                # Mostrar fila solo si está en las franjas base o tiene clase
+                celdas_fila = {d: [x for x in asig_doc if x["dia"] == d and x["franja"] == fr] for d in dias_cols}
+                if fr not in FRANJAS[:7] and not any(celdas_fila.values()):
+                    continue
+                html.append(f"<tr><td><strong>{fr}</strong></td>")
+                for d in dias_cols:
+                    items = celdas_fila[d]
+                    html.append("<td>")
+                    for it in items:
+                        cnom = CARRERAS.get(it["carrera_id"], {}).get("nombre", it["carrera_id"])
+                        html.append(
+                            f"<div class='slot-item'>"
+                            f"<strong>{it['materia']}</strong><br>"
+                            f"<span>{cnom}</span><br>"
+                            f"<span>Salón: <strong>{it['ambiente']}</strong> (Sec. {it.get('seccion','')})</span>"
+                            f"</div>"
+                        )
+                    html.append("</td>")
+                html.append("</tr>")
+            html.append("</tbody></table></div>")
+
+    html.append("</body></html>")
+    nombre_arch = f"reporte_{tipo}_{datetime.now().strftime('%H%M%S')}.html"
+    ruta_out = os.path.join(carpeta, nombre_arch)
+    with open(ruta_out, "w", encoding="utf-8") as f:
+        f.write("\n".join(html))
+
+    webbrowser.open(f"file:///{ruta_out.replace(os.sep, '/')}")
+    return ruta_out
+
+
+# ═══════════════════════════════════════════════════════
+#  WIDGET HELPERS
+# ═══════════════════════════════════════════════════════
+
+def badge(txt: str, col: str) -> ft.Container:
+    return ft.Container(
+        content=ft.Text(txt, color=col, size=10, weight=ft.FontWeight.W_700),
+        bgcolor=f"{col}22", border_radius=6, padding=_ps(8,3),
+    )
+
+def divl() -> ft.Container:
+    return ft.Container(height=1, bgcolor=BOR)
+
+def titulo(txt: str, sub: str = "") -> ft.Column:
+    c: List[ft.Control] = [ft.Text(txt, color=TW, size=26, weight=ft.FontWeight.BOLD)]
+    if sub:
+        c.append(ft.Text(sub, color=TG, size=13))
+    return ft.Column(c, spacing=4)
+
+def stat_card(tit: str, val: str, ico, col: str, nota: str) -> ft.Container:
+    return ft.Container(
+        content=ft.Column([
+            ft.Container(
+                content=ft.Icon(ico, color=col, size=20),
+                bgcolor=f"{col}20", border_radius=10,
+                padding=10, width=42, height=42,
+            ),
+            ft.Container(height=14),
+            ft.Text(val,  color=TW, size=30, weight=ft.FontWeight.BOLD),
+            ft.Text(tit,  color=TL, size=12),
+            ft.Container(height=4),
+            ft.Text(nota, color=col, size=11),
+        ], spacing=0),
+        bgcolor=BG_C, border_radius=14,
+        padding=_pa(18), border=_ba(1,BOR), expand=True,
+    )
+
+def campo(lbl: str, **kw) -> ft.TextField:
+    return ft.TextField(
+        label=lbl, bgcolor=BG_IN, border_color=BOR,
+        focused_border_color=BLUE, color=TW,
+        label_style=ft.TextStyle(color=TG),
+        border_radius=10, **kw,
+    )
+
+def ddrop(lbl: str, opts, **kw) -> ft.Dropdown:
+    return ft.Dropdown(
+        label=lbl, options=opts, bgcolor=BG_IN,
+        border_color=BOR, focused_border_color=BLUE,
+        color=TW, label_style=ft.TextStyle(color=TG),
+        border_radius=10, **kw,
+    )
+
+# ═══════════════════════════════════════════════════════
+#  APP
+# ═══════════════════════════════════════════════════════
+
+class App:
+    NAV = [
+        ("dashboard",   ft.Icons.DASHBOARD_ROUNDED,    "Dashboard"),
+        ("nueva_carga", ft.Icons.ADD_CIRCLE_ROUNDED,   "Nueva Carga"),
+        ("horarios",    ft.Icons.CALENDAR_MONTH,        "Horarios"),
+        ("ambientes",   ft.Icons.MEETING_ROOM_ROUNDED,  "Ambientes"),
+        ("docentes",    ft.Icons.PEOPLE_ROUNDED,        "Docentes"),
+        ("carreras",    ft.Icons.SCHOOL_ROUNDED,        "Carreras"),
+    ]
+
+    def __init__(self, page: ft.Page):
+        self.page    = page
+        self.motor, self._all = _seed_data()
+        self.vista   = "dashboard"
+        self.ultimo_mensaje = ""
+        self.docente_calendario_sel = DOCENTES[0] if DOCENTES else ""
+        self._setup()
+        self._build()
+        self._nav("dashboard")
+
+    def _setup(self):
+        p = self.page
+        p.title      = "UPEL - Oferta Academica 2026-2"
+        p.theme_mode = ft.ThemeMode.DARK
+        p.bgcolor    = BG_P
+        p.padding    = 0
+        p.spacing    = 0
+        try:
+            p.window.width  = 1360
+            p.window.height = 860
+            p.window.to_front()
+        except Exception:
+            pass
+
+    def _build(self):
+        self.sb_col = ft.Column(spacing=0, expand=True)
+        self.sb     = ft.Container(
+            content=self.sb_col, width=235, bgcolor=BG_SB,
+            border=_br(1, BOR),
+        )
+        self.mc_col = ft.Column(scroll=ft.ScrollMode.AUTO, spacing=0, expand=True)
+        self.mc     = ft.Container(
+            content=self.mc_col, expand=True, bgcolor=BG_P,
+            padding=_pa(28),
+        )
+        self.page.add(ft.Row([self.sb, self.mc], spacing=0, expand=True))
+
+    def _nav(self, v: str):
+        self.vista = v
+        self._sb_refresh()
+        self._mc_refresh()
+        self.page.update()
+
+    # ── ACCIÓN DE CARGA DE ARCHIVOS (.XLSX, .DOCX, .TXT) ──
+    def _importar_archivo_dialogo(self, e=None):
+        ruta = ""
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+            ruta = filedialog.askopenfilename(
+                title="Seleccionar archivo de profesores y horarios (.xlsx, .docx, .txt)",
+                filetypes=[
+                    ("Archivos soportados", "*.xlsx *.docx *.txt *.csv"),
+                    ("Excel (*.xlsx)", "*.xlsx"),
+                    ("Word (*.docx)", "*.docx"),
+                    ("Texto / CSV (*.txt, *.csv)", "*.txt *.csv"),
+                ],
+            )
+            root.destroy()
+        except Exception as ex:
+            self.ultimo_mensaje = f"Error al abrir selector: {ex}"
+            self._mc_refresh()
+            self.page.update()
+            return
+
+        if not ruta:
+            return
+        self._procesar_archivo_ruta(ruta)
+
+    def _procesar_archivo_ruta(self, ruta: str):
+        try:
+            clear_all_data(keep_salones=False)
+            res_imp = importar_archivo(ruta)
+            res_sched = generar_horarios_automaticos()
+            self._all = self.motor.sincronizar_desde_sqlite()
+            if DOCENTES:
+                self.docente_calendario_sel = DOCENTES[0]
+            nom = os.path.basename(ruta)
+            self.ultimo_mensaje = (
+                f"Archivo '{nom}' importado con exito: {res_imp.get('procesados', 0)} cargas leidas y "
+                f"{len(self._all)} horarios asignados sin conflictos."
+            )
+        except Exception as ex:
+            self.ultimo_mensaje = f"Error al procesar archivo: {ex}"
+        self._sb_refresh()
+        self._mc_refresh()
+        self.page.update()
+
+    def _restaurar_prototipo_base(self, e=None):
+        self.motor, self._all = _seed_data(forzar_base=True)
+        if DOCENTES:
+            self.docente_calendario_sel = DOCENTES[0]
+        self.ultimo_mensaje = "Datos base del prototipo UPEL (33 cursos) cargados correctamente."
+        self._sb_refresh()
+        self._mc_refresh()
+        self.page.update()
+
+    def _sb_refresh(self):
+        st = self.motor.stats()
+
+        logo = ft.Container(content=ft.Column([
+            ft.Row([
+                ft.Container(
+                    content=ft.Icon(ft.Icons.AUTO_STORIES_ROUNDED, color=TW, size=22),
+                    bgcolor=BLUE, border_radius=10, padding=9, width=42, height=42,
+                ),
+                ft.Column([
+                    ft.Text("USR", color=TW, size=15, weight=ft.FontWeight.BOLD),
+                    ft.Text("Palo Verde", color=TG, size=10),
+                ], spacing=0),
+            ], spacing=10),
+            ft.Container(height=6),
+            ft.Container(
+                content=ft.Row([
+                    ft.Icon(ft.Icons.CIRCLE, color=GRN, size=8),
+                    ft.Text("Periodo 2026-2", color=GRN, size=11),
+                ], spacing=6),
+                bgcolor=f"{GRN}15", border_radius=20,
+                padding=_ps(10, 5), border=_ba(1, f"{GRN}40"),
+            ),
+        ], spacing=10), padding=_pa(18))
+
+        btns = []
+        for vid, ico, lbl in self.NAV:
+            act = self.vista == vid
+            btns.append(ft.Container(
+                content=ft.Row([
+                    ft.Icon(ico, color=BLUE if act else TG, size=18),
+                    ft.Text(lbl, color=TW if act else TG, size=13,
+                            weight=ft.FontWeight.W_600 if act else ft.FontWeight.W_400),
+                ], spacing=12),
+                bgcolor=f"{BLUE}20" if act else None,
+                border=_ba(1, f"{BLUE}60") if act else None,
+                border_radius=10,
+                padding=_ps(14, 10),
+                margin=_ms(10, 0),
+                on_click=lambda e, v=vid: self._nav(v),
+                ink=True,
+            ))
+
+        # Botón directo en el Sidebar para cargar Excel / Word / TXT
+        btn_importar_sb = ft.Container(
+            content=ft.Row([
+                ft.Icon(ft.Icons.UPLOAD_FILE_ROUNDED, color=GRN, size=17),
+                ft.Text("Importar Excel/Word/TXT", color=GRN, size=11, weight=ft.FontWeight.W_600),
+            ], spacing=8),
+            bgcolor=f"{GRN}15",
+            border=_ba(1, f"{GRN}45"),
+            border_radius=10,
+            padding=_ps(12, 9),
+            margin=_ms(10, 6),
+            on_click=self._importar_archivo_dialogo,
+            ink=True,
+        )
+
+        def mrow(lbl, val, col):
+            return ft.Row([
+                ft.Text(lbl, color=TG, size=11, expand=True),
+                ft.Container(
+                    content=ft.Text(val, color=col, size=11, weight=ft.FontWeight.W_700),
+                    bgcolor=f"{col}18", border_radius=6,
+                    padding=_ps(7, 2),
+                ),
+            ])
+
+        bot = ft.Container(content=ft.Column([
+            divl(),
+            ft.Container(content=ft.Column([
+                ft.Text("RESUMEN RAPIDO", color=TG, size=10, weight=ft.FontWeight.W_700),
+                ft.Container(height=8),
+                mrow("Cursos activos",   str(st["cursos"]),  BLUE),
+                mrow("Ambientes en uso", f"{st['amb_uso']}/{st['amb_tot']}", ORG),
+                mrow("Conflictos",       "0",                 GRN),
+                mrow("Docentes",         str(st["docs"]),    CYAN),
+            ], spacing=6), padding=_pa(16)),
+        ]))
+
+        self.sb_col.controls = [
+            logo, divl(), ft.Container(height=8),
+            ft.Column(btns, spacing=3),
+            ft.Container(height=8),
+            btn_importar_sb,
+            ft.Container(expand=True), bot,
+        ]
+
+    def _mc_refresh(self):
+        fn = {
+            "dashboard":   self._vd,
+            "nueva_carga": self._vnc,
+            "horarios":    self._vh,
+            "ambientes":   self._va,
+            "docentes":    self._vdoc,
+            "carreras":    self._vc,
+        }.get(self.vista, self._vd)
+        self.mc_col.controls = [fn()]
+
+    # ══════════════════════════════════════════════════
+    #  VISTA DASHBOARD
+    # ══════════════════════════════════════════════════
+    def _vd(self) -> ft.Control:
+        st = self.motor.stats()
+
+        cards = ft.Row([
+            stat_card("Total Cursos",     str(st["cursos"]),  ft.Icons.BOOK_ROUNDED,          BLUE, "Periodo 2026-2"),
+            stat_card("Ambientes en Uso", str(st["amb_uso"]), ft.Icons.MEETING_ROOM_ROUNDED,  ORG,  f"de {st['amb_tot']} totales"),
+            stat_card("Docentes Activos", str(st["docs"]),    ft.Icons.PEOPLE_ROUNDED,        PURP, "Periodo 2026-2"),
+            stat_card("Conflictos",       "0",                ft.Icons.VERIFIED_ROUNDED,      GRN,  "Cero colisiones!"),
+        ], spacing=16)
+
+        enc = ft.Container(
+            content=ft.Row([
+                ft.Container(width=4),
+                ft.Text("CARRERA",  color=TG, size=10, weight=ft.FontWeight.W_700, width=140),
+                ft.Text("DOCENTE",  color=TG, size=10, weight=ft.FontWeight.W_700, width=195),
+                ft.Text("MATERIA",  color=TG, size=10, weight=ft.FontWeight.W_700, width=195),
+                ft.Text("DIA",      color=TG, size=10, weight=ft.FontWeight.W_700, width=85),
+                ft.Text("HORARIO",  color=TG, size=10, weight=ft.FontWeight.W_700, width=120),
+                ft.Text("AMBIENTE", color=TG, size=10, weight=ft.FontWeight.W_700),
+            ], spacing=8),
+            bgcolor="#1A2F45", border_radius=8,
+            padding=_ps(12, 10), margin=_mo(bottom=4),
+        )
+
+        filas = []
+        for i, e in enumerate(reversed(self._all[-10:])):
+            ci  = CARRERAS.get(e["carrera_id"], {})
+            col = ci.get("color", BLUE)
+            bg  = BG_C if i % 2 == 0 else BG_RA
+            filas.append(ft.Container(
+                content=ft.Row([
+                    ft.Container(width=4, height=32, bgcolor=col, border_radius=2),
+                    ft.Container(ft.Text(ci.get("nombre","")[:15], color=col, size=11, weight=ft.FontWeight.W_600), width=140),
+                    ft.Container(ft.Text(e["docente"][:23],         color=TL, size=11), width=195),
+                    ft.Container(ft.Text(e["materia"][:24],          color=TL, size=11), width=195),
+                    ft.Container(ft.Text(e["dia"],                   color=TG, size=11), width=85),
+                    ft.Container(ft.Text(e["franja"],                color=TG, size=11), width=120),
+                    badge(e["ambiente"], BLUE),
+                    ft.Container(expand=True),
+                    ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, color=GRN, size=15),
+                ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                bgcolor=bg, border_radius=8,
+                padding=_ps(12, 7), margin=_mo(bottom=2),
+            ))
+
+        tabla = ft.Container(
+            content=ft.Column([
+                ft.Row([
+                    ft.Text("Carga Academica Reciente", color=TW, size=15, weight=ft.FontWeight.W_600),
+                    ft.Container(expand=True),
+                    ft.TextButton("Ver todo ->",style=ft.ButtonStyle(color=BLUE),on_click=lambda _: self._nav("horarios")),
+                ]),
+                ft.Container(height=8),
+                enc,
+                ft.Column(filas, spacing=0),
+            ], spacing=0),
+            bgcolor=BG_C, border_radius=14, padding=_pa(20), border=_ba(1,BOR),
+        )
+
+        mini_car = ft.Row([
+            ft.Container(
+                content=ft.Column([
+                    ft.Container(width=8, height=8, bgcolor=c["color"], border_radius=4),
+                    ft.Container(height=6),
+                    ft.Text(str(len([e for e in self._all if e["carrera_id"]==k])),
+                            color=TW, size=22, weight=ft.FontWeight.BOLD),
+                    ft.Text(c["nombre"], color=TG, size=10, max_lines=2),
+                ], spacing=2),
+                bgcolor=BG_C, border_radius=12, padding=_pa(14),
+                border=_ba(1, f"{c['color']}35"), width=152,
+                on_click=lambda _,kk=k: self._nav("horarios"), ink=True,
+            )
+            for k, c in CARRERAS.items()
+        ], spacing=12, wrap=True)
+
+        btn_cargar_arch = ft.Container(
+            content=ft.Row([
+                ft.Icon(ft.Icons.UPLOAD_FILE_ROUNDED, color=TW, size=18),
+                ft.Text("Cargar Excel / Word / TXT", color=TW, size=13, weight=ft.FontWeight.W_600)
+            ], alignment=ft.MainAxisAlignment.CENTER, spacing=8),
+            bgcolor=PURP, border_radius=10, padding=_ps(16, 14),
+            on_click=self._importar_archivo_dialogo, ink=True,
+        )
+
+        btn_imprimir_rep = ft.Container(
+            content=ft.Row([
+                ft.Icon(ft.Icons.PRINT_ROUNDED, color=BG_P, size=18),
+                ft.Text("Imprimir HTML / PDF", color=BG_P, size=13, weight=ft.FontWeight.W_700)
+            ], alignment=ft.MainAxisAlignment.CENTER, spacing=8),
+            bgcolor=GRN, border_radius=10, padding=_ps(16, 14),
+            on_click=lambda _: generar_reporte_html_imprimible(self._all, tipo="completo"), ink=True,
+        )
+
+        # REEMPLAZO 1: ElevatedButton eliminado, ahora es un ft.Container interactivo
+        btn_nueva_carga = ft.Container(
+            content=ft.Row([
+                ft.Icon(ft.Icons.ADD_ROUNDED, color=TW, size=18),
+                ft.Text("Nueva Carga  +", color=TW, size=14, weight=ft.FontWeight.W_600)
+            ], alignment=ft.MainAxisAlignment.CENTER, spacing=8),
+            bgcolor=BLUE, border_radius=10, padding=_ps(18, 14),
+            on_click=lambda _: self._nav("nueva_carga"), ink=True,
+        )
+
+        controles_sup = [
+            ft.Row([
+                titulo("Dashboard","Sistema de Gestion de Oferta Academica - UPEL Palo Verde"),
+                ft.Container(expand=True),
+                btn_cargar_arch,
+                btn_imprimir_rep,
+                btn_nueva_carga,
+            ], spacing=10),
+        ]
+
+        if self.ultimo_mensaje:
+            controles_sup.append(ft.Container(height=12))
+            controles_sup.append(ft.Container(
+                content=ft.Row([
+                    ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, color=GRN, size=18),
+                    ft.Text(self.ultimo_mensaje, color=TW, size=12, expand=True),
+                ], spacing=10),
+                bgcolor=f"{GRN}18", border_radius=10, padding=_ps(14, 10), border=_ba(1, f"{GRN}50"),
+            ))
+
+        return ft.Column([
+            *controles_sup,
+            ft.Container(height=22),
+            cards,
+            ft.Container(height=20),
+            tabla,
+            ft.Container(height=20),
+            ft.Text("Distribucion por Carrera", color=TW, size=15, weight=ft.FontWeight.W_600),
+            ft.Container(height=10),
+            mini_car,
+            ft.Container(height=10),
+        ], spacing=0)
+
+    # ══════════════════════════════════════════════════
+    #  VISTA NUEVA CARGA (MANUAL + ARCHIVOS .XLSX / .DOCX / .TXT)
+    # ══════════════════════════════════════════════════
+    def _vnc(self) -> ft.Control:
+        dd_per = ddrop("Periodo", [ft.dropdown.Option(p) for p in PERIODOS], value="2026-2")
+        dd_car = ddrop("Carrera",  [ft.dropdown.Option(k, c["nombre"]) for k,c in CARRERAS.items()])
+        dd_doc = ddrop("Docente",  [ft.dropdown.Option(d) for d in DOCENTES])
+        dd_mat = ddrop("Materia",  [])
+        tf_hrs = campo("Horas Semanales", keyboard_type=ft.KeyboardType.NUMBER, value="2")
+        dd_cic = ddrop("Ciclo", [ft.dropdown.Option(c) for c in ["INTRODUCTORIO","BASICO","PROFESIONAL"]])
+        tf_sec = campo("Seccion", hint_text="Ej: 10100", keyboard_type=ft.KeyboardType.NUMBER)
+
+        res = ft.Container(
+            content=ft.Row([
+                ft.Icon(ft.Icons.AUTO_AWESOME_ROUNDED, color=BLUE, size=18),
+                ft.Text("El sistema asignara horario y ambiente automaticamente.",
+                        color=TG, size=13, italic=True),
+            ], spacing=10),
+            bgcolor=f"{BLUE}10", border_radius=12,
+            padding=_pa(16), border=_ba(1,BOR),
+        )
+
+        def on_car(e):
+            k = dd_car.value
+            if k in MATERIAS:
+                dd_mat.options = [ft.dropdown.Option(m["nombre"]) for m in MATERIAS[k]]
+                dd_mat.value   = None
+                dd_mat.update()
+
+        def on_mat(e):
+            k, n = dd_car.value, dd_mat.value
+            if k and n:
+                for m in MATERIAS.get(k,[]):
+                    if m["nombre"] == n:
+                        tf_hrs.value = str(m["horas"])
+                        dd_cic.value = m["ciclo"]
+                        tf_hrs.update(); dd_cic.update()
+                        break
+
+        dd_car.on_change = on_car
+        dd_mat.on_change = on_mat
+
+        def generar(e):
+            vacios = [n for n,w in [("Carrera",dd_car.value),("Docente",dd_doc.value),("Materia",dd_mat.value),("Horas",tf_hrs.value)] if not w]
+            if vacios:
+                res.content = ft.Row([
+                    ft.Icon(ft.Icons.ERROR_ROUNDED, color=RED, size=18),
+                    ft.Text(f"Completa: {', '.join(vacios)}", color=RED, size=13),
+                ], spacing=10)
+                res.bgcolor = f"{RED}12"; res.border = _ba(1,f"{RED}50")
+                res.update(); return
+
+            res.content = ft.Row([
+                ft.ProgressRing(width=22, height=22, stroke_width=3, color=BLUE),
+                ft.Text("Generando horario sin conflictos...", color=TG, size=13),
+            ], spacing=12)
+            res.bgcolor = f"{BLUE}10"; res.border = _ba(1,BOR); res.update()
+
+            datos = {
+                "carrera_id": dd_car.value, "docente": dd_doc.value,
+                "materia": dd_mat.value, "horas": int(tf_hrs.value or 2),
+                "ciclo": dd_cic.value or "INTRODUCTORIO",
+                "seccion": int(tf_sec.value or 10100), "periodo": dd_per.value or "2026-2",
+            }
+            entrada = self.motor.registrar(datos, guardar_bd=True)
+            self._all = self.motor.entradas()
+
+            if entrada.get("_error"):
+                res.content = ft.Column([
+                    ft.Row([ft.Icon(ft.Icons.ERROR_ROUNDED,color=RED,size=18),
+                            ft.Text("Sin disponibilidad",color=RED,size=13,weight=ft.FontWeight.W_600)],spacing=8),
+                    ft.Text(entrada["_error"], color=TG, size=12),
+                ], spacing=6)
+                res.bgcolor = f"{RED}10"; res.border = _ba(1,f"{RED}50")
+            else:
+                ci  = CARRERAS.get(entrada["carrera_id"],{})
+                col = ci.get("color", BLUE)
+
+                def fr(lbl, val, vc=TW):
+                    return ft.Row([
+                        ft.Text(lbl, color=TG, size=12, width=160),
+                        ft.Text(val, color=vc, size=12, weight=ft.FontWeight.W_500, expand=True),
+                    ])
+
+                res.content = ft.Column([
+                    ft.Row([
+                        ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, color=GRN, size=20),
+                        ft.Text("Horario generado exitosamente!", color=GRN, size=14, weight=ft.FontWeight.W_700),
+                    ], spacing=8),
+                    ft.Container(height=14),
+                    ft.Container(content=ft.Column([
+                        fr("Carrera:",       ci.get("nombre",""),  col),
+                        fr("Docente:",       entrada["docente"]),
+                        fr("Materia:",       entrada["materia"]),
+                        fr("Ciclo:",         entrada["ciclo"]),
+                        divl(),
+                        fr("Dia asignado:",  entrada["dia"],        BLUE),
+                        fr("Horario:",       entrada["franja"],     BLUE),
+                        fr("Ambiente:",      entrada["ambiente"],   ORG),
+                        fr("Cap. maxima:",   f"{MAX_EST} estudiantes", GRN),
+                        fr("Conflictos:",    "Ninguno detectado",   GRN),
+                    ], spacing=8), bgcolor=BG_P, border_radius=10, padding=_pa(14)),
+                ], spacing=0)
+                res.bgcolor = f"{GRN}10"; res.border = _ba(1,f"{GRN}50")
+                self._sb_refresh(); self.page.update()
+
+            res.update()
+
+        def paso(n, txt):
+            return ft.Container(
+                content=ft.Row([
+                    ft.Container(
+                        content=ft.Text(n,color=TW,size=10,weight=ft.FontWeight.BOLD),
+                        bgcolor=BLUE, border_radius=12, width=22, height=22,
+                        alignment=ft.alignment.center,
+                    ),
+                    ft.Text(txt, color=TG, size=12, expand=True),
+                ], spacing=10),
+                margin=_mo(bottom=8),
+            )
+
+        # REEMPLAZO 2: ElevatedButton eliminado, ahora es un ft.Container interactivo
+        btn_generar = ft.Container(
+            content=ft.Row([
+                ft.Icon(ft.Icons.AUTO_AWESOME_ROUNDED, color=TW, size=18),
+                ft.Text("Generar Horario Automatico", color=TW, size=14, weight=ft.FontWeight.W_600)
+            ], alignment=ft.MainAxisAlignment.CENTER, spacing=8),
+            bgcolor=BLUE, border_radius=10, padding=_ps(20, 16),
+            on_click=generar, width=float("inf"), ink=True,
+        )
+
+        # Panel de carga masiva por archivo (.xlsx, .docx, .txt)
+        ruta_excel_palo_verde = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "uploads", "DOC-20261016-WA0001.xlsx"
+        )
+        btn_subir_doc = ft.Container(
+            content=ft.Row([
+                ft.Icon(ft.Icons.UPLOAD_FILE_ROUNDED, color=TW, size=18),
+                ft.Text("Seleccionar Archivo (.xlsx / .docx / .txt)", color=TW, size=13, weight=ft.FontWeight.W_600),
+            ], alignment=ft.MainAxisAlignment.CENTER, spacing=8),
+            bgcolor=PURP, border_radius=10, padding=_ps(16, 13),
+            on_click=self._importar_archivo_dialogo, ink=True,
+        )
+
+        botones_rapidos = [btn_subir_doc]
+        if os.path.exists(ruta_excel_palo_verde):
+            botones_rapidos.append(ft.Container(
+                content=ft.Row([
+                    ft.Icon(ft.Icons.TABLE_VIEW_ROUNDED, color=BG_P, size=17),
+                    ft.Text("Cargar Excel Oficial Palo Verde (447 Cursos)", color=BG_P, size=12, weight=ft.FontWeight.W_700),
+                ], alignment=ft.MainAxisAlignment.CENTER, spacing=8),
+                bgcolor=GRN, border_radius=10, padding=_ps(14, 12),
+                on_click=lambda _: self._procesar_archivo_ruta(ruta_excel_palo_verde), ink=True,
+            ))
+        botones_rapidos.append(ft.Container(
+            content=ft.Row([
+                ft.Icon(ft.Icons.RESTORE_ROUNDED, color=TL, size=16),
+                ft.Text("Restaurar 33 Cursos Base del Prototipo", color=TL, size=12),
+            ], alignment=ft.MainAxisAlignment.CENTER, spacing=8),
+            bgcolor=BG_IN, border_radius=10, padding=_ps(14, 10), border=_ba(1, BOR),
+            on_click=self._restaurar_prototipo_base, ink=True,
+        ))
+
+        pf = ft.Container(content=ft.Column([
+            ft.Text("Datos de la Carga", color=TW, size=15, weight=ft.FontWeight.W_600),
+            divl(), ft.Container(height=12),
+            ft.Container(content=ft.Column([
+                ft.Row([ft.Icon(ft.Icons.INFO_ROUNDED,color=BLUE,size=15),
+                        ft.Text("Restricciones del Sistema",color=TW,size=12,weight=ft.FontWeight.W_600)],spacing=8),
+                ft.Container(height=4),
+                ft.Text(f"- Maximo {MAX_EST} estudiantes por ambiente", color=TG, size=11),
+                ft.Text(f"- {len(AMBIENTES)} ambientes disponibles en total",  color=TG, size=11),
+                ft.Text("- El sistema garantiza 0 conflictos",           color=GRN, size=11),
+            ], spacing=3), bgcolor=f"{BLUE}12", border_radius=10,padding=_pa(12), border=_ba(1,f"{BLUE}40")),
+            ft.Container(height=14),
+            dd_per, ft.Container(height=8),
+            dd_car, ft.Container(height=8),
+            dd_doc, ft.Container(height=8),
+            dd_mat, ft.Container(height=8),
+            ft.Row([tf_hrs, dd_cic], spacing=10), ft.Container(height=8),
+            tf_sec, ft.Container(height=20),
+            btn_generar
+        ], spacing=0), bgcolor=BG_C, border_radius=14, padding=_pa(22), border=_ba(1,BOR), expand=True)
+
+        pr = ft.Container(content=ft.Column([
+            ft.Text("Resultado del Sistema", color=TW, size=15, weight=ft.FontWeight.W_600),
+            divl(), ft.Container(height=12),
+            res,
+            ft.Container(height=18),
+            ft.Text("Carga Masiva desde Documentos (.xlsx, .docx, .txt)", color=TW, size=14, weight=ft.FontWeight.W_600),
+            ft.Text("Importa profesores, carreras, materias y disponibilidad desde archivos Excel, Word o TXT:", color=TG, size=11),
+            ft.Container(height=8),
+            ft.Column(botones_rapidos, spacing=8),
+            ft.Container(height=18),
+            ft.Text("Como funciona el motor?", color=TW, size=13, weight=ft.FontWeight.W_600),
+            ft.Container(height=10),
+            paso("1","Recibes solo los datos esenciales del docente y la materia o un archivo (.xlsx/.docx/.txt)."),
+            paso("2","El motor verifica la disponibilidad del docente en cada franja."),
+            paso("3","Busca un ambiente libre en esa misma franja horaria."),
+            paso("4","Confirma que no existen superposiciones en ninguna carrera."),
+            paso("5","Registra la asignacion en la base SQLite con todos los datos generados."),
+        ], spacing=0), bgcolor=BG_C, border_radius=14, padding=_pa(22), border=_ba(1,BOR), expand=True)
+
+        return ft.Column([
+            titulo("Nueva Carga Academica","Ingresa los datos o carga un archivo (.xlsx, .docx, .txt); el sistema asigna horario y ambiente sin conflictos."),
+            ft.Container(height=22),
+            ft.Row([pf, pr], spacing=20, vertical_alignment=ft.CrossAxisAlignment.START, expand=True),
+        ], spacing=0, expand=True)
+
+    # ══════════════════════════════════════════════════
+    #  VISTA HORARIOS (1. OFERTA ACADÉMICA GENERAL)
+    # ══════════════════════════════════════════════════
+    def _vh(self) -> ft.Control:
+        dd_fc = ddrop("Filtrar Carrera",
+            [ft.dropdown.Option("TODAS","Todas las Carreras")]
+            +[ft.dropdown.Option(k,c["nombre"]) for k,c in CARRERAS.items()],
+            value="TODAS", width=220)
+        dd_fd = ddrop("Filtrar Dia",
+            [ft.dropdown.Option("TODOS","Todos los Dias")]
+            +[ft.dropdown.Option(d) for d in DIAS],
+            value="TODOS", width=180)
+        dd_fdoc = ddrop("Filtrar Docente (Ordenados)",
+            [ft.dropdown.Option("TODOS","Todos los Docentes")]
+            +[ft.dropdown.Option(d) for d in sorted(DOCENTES)],
+            value="TODOS", width=260)
+
+        col_t = ft.Column(spacing=0)
+
+        def build(e=None):
+            fc, fd, fdoc = dd_fc.value, dd_fd.value, dd_fdoc.value
+            datos  = list(self._all)
+            if fc and fc != "TODAS": datos = [x for x in datos if x["carrera_id"]==fc]
+            if fd and fd != "TODOS": datos = [x for x in datos if x["dia"]==fd]
+            if fdoc and fdoc != "TODOS": datos = [x for x in datos if x["docente"]==fdoc]
+            # Ordenar por docente alfabéticamente
+            datos.sort(key=lambda x: (x["docente"], x["carrera_id"], x["dia"], x["franja"]))
+
+            enc = ft.Container(
+                content=ft.Row([
+                    ft.Container(width=4),
+                    ft.Text("CARRERA",  color=TG,size=10,weight=ft.FontWeight.W_700,width=140),
+                    ft.Text("DOCENTE",  color=TG,size=10,weight=ft.FontWeight.W_700,width=195),
+                    ft.Text("MATERIA",  color=TG,size=10,weight=ft.FontWeight.W_700,width=195),
+                    ft.Text("CICLO",    color=TG,size=10,weight=ft.FontWeight.W_700,width=100),
+                    ft.Text("DIA",      color=TG,size=10,weight=ft.FontWeight.W_700,width=85),
+                    ft.Text("HORARIO",  color=TG,size=10,weight=ft.FontWeight.W_700,width=120),
+                    ft.Text("AMBIENTE", color=TG,size=10,weight=ft.FontWeight.W_700,width=90),
+                    ft.Text("OK",       color=TG,size=10,weight=ft.FontWeight.W_700),
+                ], spacing=8),
+                bgcolor="#1A2F45", border_radius=8,
+                padding=_ps(12,10), margin=_mo(bottom=4),
+            )
+            filas = []
+            for i, entry in enumerate(datos):
+                ci  = CARRERAS.get(entry["carrera_id"],{})
+                col = ci.get("color", BLUE)
+                bg  = BG_C if i%2==0 else BG_RA
+                filas.append(ft.Container(
+                    content=ft.Row([
+                        ft.Container(width=4,height=32,bgcolor=col,border_radius=2),
+                        ft.Container(ft.Text(ci.get("nombre","")[:15],color=col,size=11,weight=ft.FontWeight.W_600),width=140),
+                        ft.Container(ft.Text(entry["docente"][:24],color=TL,size=11),width=195),
+                        ft.Container(ft.Text(entry["materia"][:24], color=TL,size=11),width=195),
+                        ft.Container(badge(entry["ciclo"][:5],PURP),width=100),
+                        ft.Container(ft.Text(entry["dia"],  color=TG,size=11),width=85),
+                        ft.Container(ft.Text(entry["franja"],color=TG,size=11),width=120),
+                        badge(entry["ambiente"],BLUE),
+                        ft.Container(expand=True),
+                        ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED,color=GRN,size=15),
+                    ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    bgcolor=bg, border_radius=8,
+                    padding=_ps(12,7), margin=_mo(bottom=2),
+                ))
+            col_t.controls = [
+                enc, ft.Column(filas,spacing=0),
+                ft.Container(
+                    content=ft.Text(f"Total: {len(datos)} registros (ordenados por docente)",color=TG,size=11),
+                    padding=_ps(12,8),
+                ),
+            ]
+            if col_t.page:
+                col_t.update()
+
+        dd_fc.on_change = build
+        dd_fd.on_change = build
+        dd_fdoc.on_change = build
+        build()
+
+        btn_print_oferta = ft.Container(
+            content=ft.Row([
+                ft.Icon(ft.Icons.PRINT_ROUNDED, color=BG_P, size=17),
+                ft.Text("Imprimir Oferta General (HTML / PDF)", color=BG_P, size=12, weight=ft.FontWeight.W_700),
+            ], spacing=8),
+            bgcolor=GRN, border_radius=10, padding=_ps(16, 12),
+            on_click=lambda _: generar_reporte_html_imprimible(self._all, tipo="oferta"),
+            ink=True,
+        )
+
+        banner = ft.Container(
+            content=ft.Row([
+                ft.Icon(ft.Icons.VERIFIED_ROUNDED, color=GRN, size=22),
+                ft.Column([
+                    ft.Text("Sistema Sin Conflictos de Horario",color=GRN,size=13,weight=ft.FontWeight.W_700),
+                    ft.Text("Todos los ambientes y docentes asignados sin superposicion.",color=TG,size=11),
+                ], spacing=2),
+                ft.Container(expand=True),
+                badge("0 CONFLICTOS", GRN),
+            ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            bgcolor=f"{GRN}12", border_radius=12,
+            padding=_pa(16), border=_ba(1,f"{GRN}40"),
+        )
+
+        return ft.Column([
+            ft.Row([
+                titulo("Horarios Asignados","1) Oferta academica general con profesores ordenados alfabeticamente."),
+                ft.Container(expand=True),
+                btn_print_oferta,
+            ]),
+            ft.Container(height=18),
+            banner,
+            ft.Container(height=14),
+            ft.Row([dd_fc, dd_fd, dd_fdoc], spacing=12),
+            ft.Container(height=12),
+            ft.Container(
+                content=ft.Column([col_t], scroll=ft.ScrollMode.AUTO),
+                bgcolor=BG_C, border_radius=14, padding=_pa(16),
+                border=_ba(1,BOR), expand=True,
+            ),
+        ], expand=True, spacing=0)
+
+    # ══════════════════════════════════════════════════
+    #  VISTA AMBIENTES
+    # ══════════════════════════════════════════════════
+    def _va(self) -> ft.Control:
+        usados = self.motor.usados()
+        st     = self.motor.stats()
+
+        cards = []
+        for amb in AMBIENTES:
+            en_uso = amb in usados
+            clases = [e for e in self._all if e.get("ambiente") == amb]
+            col    = ORG if en_uso else GRN
+            cards.append(ft.Container(
+                content=ft.Column([
+                    ft.Row([
+                        ft.Icon(ft.Icons.MEETING_ROOM_ROUNDED, color=col, size=16),
+                        ft.Container(expand=True),
+                        badge("OCUP" if en_uso else "LIBRE", col),
+                    ]),
+                    ft.Container(height=8),
+                    ft.Text(amb, color=TW, size=13, weight=ft.FontWeight.BOLD),
+                    ft.Text(f"{len(clases)} clase(s)", color=TG, size=10),
+                    ft.Container(height=4),
+                    ft.Text(f"Cap: {MAX_EST}", color=TG, size=10),
+                ], spacing=3),
+                bgcolor=BG_C, border_radius=12, padding=_pa(12),
+                border=_ba(1,f"{col}40"), width=135, height=115,
+            ))
+
+        return ft.Column([
+            titulo("Gestion de Ambientes", f"Distribucion de los {st['amb_tot']} ambientes academicos."),
+            ft.Container(height=20),
+            ft.Row([
+                stat_card("Total Ambientes", str(st["amb_tot"]),   ft.Icons.MEETING_ROOM_ROUNDED, BLUE, "Capacidad total"),
+                stat_card("En Uso",           str(st["amb_uso"]),   ft.Icons.LOCK_ROUNDED,          ORG,  "Asignados"),
+                stat_card("Disponibles",      str(st["amb_lib"]),   ft.Icons.CHECK_ROUNDED,         GRN,  "Libres"),
+                stat_card("Cap. por Aula",    str(MAX_EST),         ft.Icons.PERSON_ROUNDED,        PURP, "Estudiantes max."),
+            ], spacing=16),
+            ft.Container(height=20),
+            ft.Text("Estado de cada Ambiente", color=TW, size=15, weight=ft.FontWeight.W_600),
+            ft.Container(height=12),
+            ft.Container(
+                content=ft.GridView(
+                    controls=cards, max_extent=145,
+                    child_aspect_ratio=145/115,
+                    spacing=12, run_spacing=12, expand=True,
+                ),
+                bgcolor=BG_C, border_radius=14,
+                padding=_pa(18), border=_ba(1,BOR), height=430,
+            ),
+        ], spacing=0, scroll=ft.ScrollMode.AUTO)
+
+    # ══════════════════════════════════════════════════
+    #  VISTA DOCENTES (2. CALENDARIO POR PROFESOR + 3. IMPRIMIR TODOS O 1 SOLO)
+    # ══════════════════════════════════════════════════
+    def _vdoc(self) -> ft.Control:
+        docs_ordenados = sorted(DOCENTES)
+        if not self.docente_calendario_sel and docs_ordenados:
+            self.docente_calendario_sel = docs_ordenados[0]
+
+        # ── Panel 3) Selector de Impresión HTML/PDF: Elegir TODOS los profesores o 1 SOLO profesor ──
+        dd_modo_imp = ddrop(
+            "Opcion de Impresion de Horarios",
+            [
+                ft.dropdown.Option("TODOS", f"Imprimir TODOS los profesores registrados ({len(docs_ordenados)})"),
+                ft.dropdown.Option("UNO",   "Elegir 1 SOLO profesor de la lista"),
+            ],
+            value="TODOS",
+            width=340,
+        )
+        dd_prof_imp = ddrop(
+            "Seleccionar Profesor Registrado",
+            [ft.dropdown.Option(d) for d in docs_ordenados],
+            value=self.docente_calendario_sel if self.docente_calendario_sel in docs_ordenados else (docs_ordenados[0] if docs_ordenados else None),
+            width=340,
+            disabled=True,
+        )
+
+        def on_cambio_modo_imp(e):
+            dd_prof_imp.disabled = (dd_modo_imp.value != "UNO")
+            dd_prof_imp.update()
+
+        dd_modo_imp.on_change = on_cambio_modo_imp
+
+        def acc_imprimir_docentes(e):
+            if dd_modo_imp.value == "UNO" and dd_prof_imp.value:
+                generar_reporte_html_imprimible(self._all, tipo="profesor", docente_filtro=dd_prof_imp.value)
+            else:
+                generar_reporte_html_imprimible(self._all, tipo="profesor", docente_filtro="TODOS")
+
+        btn_imp_doc = ft.Container(
+            content=ft.Row([
+                ft.Icon(ft.Icons.PRINT_ROUNDED, color=BG_P, size=18),
+                ft.Text("Generar HTML / PDF Imprimible", color=BG_P, size=13, weight=ft.FontWeight.W_700),
+            ], spacing=8),
+            bgcolor=GRN, border_radius=10, padding=_ps(18, 14),
+            on_click=acc_imprimir_docentes, ink=True,
+        )
+
+        panel_impresion = ft.Container(
+            content=ft.Column([
+                ft.Row([
+                    ft.Icon(ft.Icons.PICTURE_AS_PDF_ROUNDED, color=GRN, size=20),
+                    ft.Text("Imprimir / Exportar Horario Tipo Calendario (HTML / PDF)", color=TW, size=14, weight=ft.FontWeight.W_700),
+                ], spacing=8),
+                ft.Text("Elige si deseas imprimir el horario de todos los profesores registrados o seleccionar a 1 solo profesor:", color=TG, size=11),
+                ft.Container(height=6),
+                ft.Row([dd_modo_imp, dd_prof_imp, btn_imp_doc], spacing=12, wrap=True, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ], spacing=4),
+            bgcolor=BG_C, border_radius=14, padding=_pa(18), border=_ba(1, f"{GRN}45"),
+        )
+
+        # ── Panel 2) Visualizador de Horario Tipo Calendario Semanal del Profesor Seleccionado ──
+        dd_cal_doc = ddrop(
+            "Ver Horario Tipo Calendario del Profesor",
+            [ft.dropdown.Option(d) for d in docs_ordenados],
+            value=self.docente_calendario_sel,
+            width=360,
+        )
+        cont_calendario = ft.Column(spacing=4)
+
+        def render_calendario(e=None):
+            doc_actual = dd_cal_doc.value or (docs_ordenados[0] if docs_ordenados else "")
+            self.docente_calendario_sel = doc_actual
+            asig_p = [x for x in self._all if x.get("docente") == doc_actual]
+            dias_cal = ["LUNES", "MARTES", "MIERCOLES", "JUEVES", "VIERNES", "SABADO"]
+
+            enc_cal = ft.Container(
+                content=ft.Row([
+                    ft.Text("HORARIO", color=TG, size=10, weight=ft.FontWeight.W_700, width=105),
+                    *[ft.Text(d, color=TG, size=10, weight=ft.FontWeight.W_700, expand=True) for d in dias_cal],
+                ], spacing=6),
+                bgcolor="#1A2F45", border_radius=8, padding=_ps(10, 8),
+            )
+            filas_cal = [enc_cal]
+            franjas_mostrar = list(dict.fromkeys(FRANJAS[:7] + [x["franja"] for x in asig_p]))
+
+            for idx_f, fr in enumerate(franjas_mostrar):
+                celdas = []
+                for d in dias_cal:
+                    clases_celda = [x for x in asig_p if x["dia"] == d and x["franja"] == fr]
+                    if clases_celda:
+                        items_c = []
+                        for cc in clases_celda:
+                            col_c = CARRERAS.get(cc["carrera_id"], {}).get("color", BLUE)
+                            items_c.append(ft.Container(
+                                content=ft.Column([
+                                    ft.Text(cc["materia"][:20], color=TW, size=10, weight=ft.FontWeight.W_700),
+                                    ft.Text(CARRERAS.get(cc["carrera_id"], {}).get("nombre", "")[:18], color=col_c, size=9),
+                                    badge(cc["ambiente"], BLUE),
+                                ], spacing=2),
+                                bgcolor=f"{col_c}18", border_radius=6, padding=_pa(6), border=_ba(1, f"{col_c}50"),
+                            ))
+                        celdas.append(ft.Column(items_c, spacing=3, expand=True))
+                    else:
+                        celdas.append(ft.Container(
+                            content=ft.Text("-", color=BOR, size=10),
+                            alignment=ft.alignment.center, expand=True, height=44,
+                        ))
+
+                filas_cal.append(ft.Container(
+                    content=ft.Row([
+                        ft.Container(ft.Text(fr, color=TL, size=10, weight=ft.FontWeight.W_600), width=105),
+                        *celdas,
+                    ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    bgcolor=BG_C if idx_f % 2 == 0 else BG_RA,
+                    border_radius=6, padding=_ps(10, 6),
+                ))
+
+            cont_calendario.controls = filas_cal
+            if cont_calendario.page:
+                cont_calendario.update()
+
+        dd_cal_doc.on_change = render_calendario
+        render_calendario()
+
+        panel_calendario = ft.Container(
+            content=ft.Column([
+                ft.Row([
+                    ft.Icon(ft.Icons.CALENDAR_VIEW_WEEK_ROUNDED, color=BLUE, size=20),
+                    ft.Text("Horario Semanal Tipo Calendario por Docente", color=TW, size=15, weight=ft.FontWeight.W_600),
+                    ft.Container(expand=True),
+                    dd_cal_doc,
+                ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Container(height=8),
+                cont_calendario,
+            ], spacing=4),
+            bgcolor=BG_C, border_radius=14, padding=_pa(18), border=_ba(1, BOR),
+        )
+
+        # ── Tarjetas de todos los docentes registrados (diseño original del prototipo) ──
+        cards = []
+        for doc in docs_ordenados:
+            asig    = [e for e in self._all if e.get("docente") == doc]
+            nombres = doc.title().split()
+            ini     = nombres[0][0] if nombres else "?"
+            filas_m = [
+                ft.Row([
+                    ft.Container(width=6, height=6,bgcolor=CARRERAS.get(e["carrera_id"],{}).get("color",BLUE),border_radius=3),
+                    ft.Text(e["materia"][:22], color=TG, size=10, expand=True),
+                    ft.Text(e["dia"][:3],      color=BLUE, size=10),
+                ], spacing=6)
+                for e in asig[:3]
+            ]
+            if len(asig) > 3:
+                filas_m.append(ft.Text(f"+{len(asig)-3} mas", color=TG, size=10, italic=True))
+
+            def sel_doc_card(e, d_sel=doc):
+                dd_cal_doc.value = d_sel
+                dd_prof_imp.value = d_sel
+                render_calendario()
+                dd_cal_doc.update()
+                dd_prof_imp.update()
+
+            cards.append(ft.Container(
+                content=ft.Column([
+                    ft.Row([
+                        ft.Container(
+                            content=ft.Text(ini, color=TW, size=15, weight=ft.FontWeight.BOLD),
+                            bgcolor=BLUE, width=38, height=38, border_radius=19,
+                            alignment=ft.alignment.center,
+                        ),
+                        ft.Column([
+                            ft.Text(" ".join(nombres[:2]), color=TW, size=12, weight=ft.FontWeight.W_600),
+                            ft.Text(f"{len(asig)} materia(s)", color=TG, size=10),
+                        ], spacing=2, expand=True),
+                    ], spacing=10),
+                    ft.Container(height=8),
+                    divl(),
+                    ft.Container(height=8),
+                    *filas_m,
+                ], spacing=0),
+                bgcolor=BG_C, border_radius=12, padding=_pa(14),
+                border=_ba(1,BOR), width=265,
+                on_click=sel_doc_card, ink=True,
+            ))
+
+        return ft.Column([
+            titulo("Gestion de Docentes","Panel de docentes ordenados, horario tipo calendario semanal e impresion PDF/HTML."),
+            ft.Container(height=18),
+            panel_impresion,
+            ft.Container(height=18),
+            panel_calendario,
+            ft.Container(height=20),
+            ft.Text(f"Directorio de Docentes Registrados ({len(docs_ordenados)}) — Haz clic en un docente para ver su calendario:", color=TW, size=14, weight=ft.FontWeight.W_600),
+            ft.Container(height=12),
+            ft.Row(cards, wrap=True, spacing=14, run_spacing=14),
+        ], scroll=ft.ScrollMode.AUTO, spacing=0)
+
+    # ══════════════════════════════════════════════════
+    #  VISTA CARRERAS
+    # ══════════════════════════════════════════════════
+    def _vc(self) -> ft.Control:
+        paneles = []
+        for kid, c in CARRERAS.items():
+            col    = c["color"]
+            asig   = [e for e in self._all if e["carrera_id"]==kid]
+            pensum = MATERIAS.get(kid,[])
+            mat_r  = [
+                ft.Container(
+                    content=ft.Row([
+                        ft.Container(width=7, height=7, bgcolor=col, border_radius=4),
+                        ft.Text(m["nombre"], color=TW, size=11, expand=True),
+                        ft.Text(f"{m['horas']}h", color=TG, size=10),
+                        badge(m["ciclo"][:5], col),
+                    ], spacing=8),
+                    padding=_ps(0,5),
+                    border=_bb(1,BOR),
+                )
+                for m in pensum[:14]
+            ]
+            paneles.append(ft.Container(
+                content=ft.Column([
+                    ft.Container(content=ft.Row([
+                        ft.Container(width=4, height=48, bgcolor=col, border_radius=2),
+                        ft.Column([
+                            ft.Text(c["nombre"],  color=TW, size=14, weight=ft.FontWeight.BOLD),
+                            ft.Text(c["mencion"], color=TG, size=11),
+                        ], spacing=3, expand=True),
+                        badge(f"{len(asig)} cursos", col),
+                    ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER), height=52),
+                    divl(),
+                    ft.Container(height=8),
+                    ft.Text("Pensum de Materias", color=TG, size=11, weight=ft.FontWeight.W_600),
+                    ft.Container(height=4),
+                    *mat_r,
+                ], spacing=4),
+                bgcolor=BG_C, border_radius=14, padding=_pa(18),
+                border=_ba(1,f"{col}35"), width=375,
+            ))
+
+        return ft.Column([
+            titulo("Gestion de Carreras","Carreras registradas y su pensum academico en el sistema."),
+            ft.Container(height=22),
+            ft.Row(paneles, wrap=True, spacing=18, run_spacing=18),
+        ], scroll=ft.ScrollMode.AUTO, spacing=0)
+
+# ═══════════════════════════════════════════════════════
+#  ENTRY POINT / ARRANQUE INFALIBLE
+# ═══════════════════════════════════════════════════════
+def main(page: ft.Page) -> None:
+    App(page)
+
+
+def _parchar_flet_escritorio_interactivo() -> None:
+    """
+    Asegura que cuando Flet lance flet.exe en Windows (incluso desde una terminal en segundo plano),
+    la ventana nativa se cree siempre en el escritorio interactivo principal (WinSta0\\Default).
+    """
+    if os.name != "nt":
+        return
+    try:
+        import asyncio
+        import ctypes
+        from ctypes import wintypes
+        import flet_desktop
+
+        orig_locate = flet_desktop.__locate_and_unpack_flet_view
+
+        class STARTUPINFOW(ctypes.Structure):
+            _fields_ = [
+                ("cb", wintypes.DWORD),
+                ("lpReserved", wintypes.LPWSTR),
+                ("lpDesktop", wintypes.LPWSTR),
+                ("lpTitle", wintypes.LPWSTR),
+                ("dwX", wintypes.DWORD),
+                ("dwY", wintypes.DWORD),
+                ("dwXSize", wintypes.DWORD),
+                ("dwYSize", wintypes.DWORD),
+                ("dwXCountChars", wintypes.DWORD),
+                ("dwYCountChars", wintypes.DWORD),
+                ("dwFillAttribute", wintypes.DWORD),
+                ("dwFlags", wintypes.DWORD),
+                ("wShowWindow", wintypes.WORD),
+                ("cbReserved2", wintypes.WORD),
+                ("lpReserved2", ctypes.POINTER(wintypes.BYTE)),
+                ("hStdInput", wintypes.HANDLE),
+                ("hStdOutput", wintypes.HANDLE),
+                ("hStdError", wintypes.HANDLE),
+            ]
+
+        class PROCESS_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("hProcess", wintypes.HANDLE),
+                ("hThread", wintypes.HANDLE),
+                ("dwProcessId", wintypes.DWORD),
+                ("dwThreadId", wintypes.DWORD),
+            ]
+
+        class _WinProcWrapper:
+            def __init__(self, hproc, pid):
+                self._hproc = hproc
+                self.pid = pid
+                self.returncode = None
+
+            async def wait(self):
+                kernel32 = ctypes.windll.kernel32
+                while True:
+                    res = kernel32.WaitForSingleObject(self._hproc, 250)
+                    if res == 0:
+                        code = wintypes.DWORD()
+                        kernel32.GetExitCodeProcess(self._hproc, ctypes.byref(code))
+                        self.returncode = code.value
+                        return self.returncode
+                    await asyncio.sleep(0.25)
+
+        async def _custom_open_flet_view_async(page_url, assets_dir, hidden):
+            args, flet_env, pid_file = orig_locate(page_url, assets_dir, hidden)
+            si = STARTUPINFOW()
+            si.cb = ctypes.sizeof(si)
+            si.lpDesktop = "WinSta0\\Default"
+            si.dwFlags = 1
+            si.wShowWindow = 1
+            pi = PROCESS_INFORMATION()
+
+            cmd_str = " ".join(f'"{a}"' for a in args)
+            cmd_buf = ctypes.create_unicode_buffer(cmd_str)
+            cwd_str = os.path.dirname(args[0])
+            kernel32 = ctypes.windll.kernel32
+            ok = kernel32.CreateProcessW(
+                None, cmd_buf, None, None, False, 0, None, cwd_str, ctypes.byref(si), ctypes.byref(pi)
+            )
+            if ok:
+                return _WinProcWrapper(pi.hProcess, pi.dwProcessId), pid_file
+            return (
+                await asyncio.create_subprocess_exec(args[0], *args[1:], env=flet_env),
+                pid_file,
+            )
+
+        flet_desktop.open_flet_view_async = _custom_open_flet_view_async
+    except Exception as ex:
+        print(f"Aviso parche escritorio Flet: {ex}")
+
+
+if __name__ == "__main__":
+    _parchar_flet_escritorio_interactivo()
+    # REEMPLAZO FINAL: Bloque try-except para asegurar que arranque en tu versión
+    try:
+        ft.run(main)
+    except AttributeError:
+        try:
+            ft.app(target=main)
+        except Exception as e:
+            print(f"Error al iniciar Flet: {e}")

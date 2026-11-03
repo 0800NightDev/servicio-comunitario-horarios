@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Reporte Oficial de Horarios Universitarios</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Segoe UI', Arial, sans-serif;
+            color: #111827;
+            margin: 0;
+            padding: 25px;
+            background: #ffffff;
+            font-size: 12px;
+        }
+        .no-print-bar {
+            background: #1e3a8a;
+            color: #ffffff;
+            padding: 14px 20px;
+            border-radius: 8px;
+            margin-bottom: 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .btn-action {
+            background: #f59e0b;
+            color: #111827;
+            border: none;
+            padding: 8px 16px;
+            font-weight: bold;
+            border-radius: 6px;
+            cursor: pointer;
+            text-decoration: none;
+            font-size: 13px;
+            margin-left: 8px;
+        }
+        .btn-secondary {
+            background: #ffffff;
+            color: #1e3a8a;
+        }
+        .header-univ {
+            text-align: center;
+            border-bottom: 2px solid #1e3a8a;
+            padding-bottom: 12px;
+            margin-bottom: 20px;
+        }
+        .header-univ h1 {
+            margin: 0 0 4px 0;
+            font-size: 20px;
+            color: #1e3a8a;
+            text-transform: uppercase;
+        }
+        .header-univ p {
+            margin: 2px 0;
+            color: #4b5563;
+            font-size: 12px;
+        }
+        .section-title {
+            background: #f1f5f9;
+            border-left: 5px solid #1e3a8a;
+            padding: 8px 12px;
+            font-size: 15px;
+            font-weight: bold;
+            color: #1e3a8a;
+            margin: 22px 0 12px 0;
+        }
+        .facultad-box {
+            margin-bottom: 24px;
+            page-break-inside: avoid;
+        }
+        .facultad-header {
+            background: #1e3a8a;
+            color: #ffffff;
+            padding: 7px 12px;
+            font-weight: bold;
+            font-size: 13px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 16px;
+        }
+        th, td {
+            border: 1px solid #cbd5e1;
+            padding: 6px 8px;
+            text-align: left;
+            vertical-align: top;
+        }
+        th {
+            background-color: #f8fafc;
+            font-weight: bold;
+            color: #1e293b;
+        }
+        .cal-table th {
+            background-color: #1e3a8a;
+            color: #ffffff;
+            text-align: center;
+            width: 14%;
+        }
+        .cal-table td.hora-col {
+            background-color: #f1f5f9;
+            font-weight: bold;
+            text-align: center;
+            vertical-align: middle;
+            width: 11%;
+        }
+        .cal-item {
+            background: #eff6ff;
+            border-left: 3px solid #2563eb;
+            padding: 4px 6px;
+            margin-bottom: 4px;
+            font-size: 11px;
+        }
+        .profesor-card {
+            margin-bottom: 28px;
+            page-break-inside: avoid;
+        }
+        @media print {
+            .no-print-bar {
+                display: none !important;
+            }
+            body {
+                padding: 0;
+            }
+            .page-break {
+                page-break-before: always;
+            }
+        }
+    </style>
+</head>
+<body {% if auto_print %}onload="window.print()"{% endif %}>
+
+    <div class="no-print-bar" style="flex-wrap: wrap; gap: 12px;">
+        <div>
+            <strong>Vista de Reporte Oficial HTML / PDF</strong> — Puedes filtrar por profesor o imprimir todos directamente:
+            {% if not es_descarga and tipo in ('profesor', 'completo') %}
+            <form method="GET" action="{{ url_for('reporte_imprimible') }}" style="margin-top: 8px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                <input type="hidden" name="tipo" value="{{ tipo }}">
+                <label style="cursor: pointer;">
+                    <input type="radio" name="modo_filtro" value="todos" {% if not profesor_id_seleccionado %}checked{% endif %} onchange="document.getElementById('selProfReporte').disabled=true; document.getElementById('selProfReporte').value=''; this.form.submit();">
+                    Todos los profesores ({{ todos_profesores|length }})
+                </label>
+                <label style="cursor: pointer;">
+                    <input type="radio" name="modo_filtro" value="uno" {% if profesor_id_seleccionado %}checked{% endif %} onchange="document.getElementById('selProfReporte').disabled=false; document.getElementById('selProfReporte').focus();">
+                    Elegir 1 solo profesor:
+                </label>
+                <select id="selProfReporte" name="profesor_id" style="padding: 4px 8px; border-radius: 4px; border: none; font-size: 12px;" {% if not profesor_id_seleccionado %}disabled{% endif %} onchange="this.form.submit()">
+                    <option value="">-- Selecciona un profesor --</option>
+                    {% for p in todos_profesores %}
+                        <option value="{{ p.id }}" {% if profesor_id_seleccionado == p.id %}selected{% endif %}>{{ p.nombre }}</option>
+                    {% endfor %}
+                </select>
+            </form>
+            {% endif %}
+        </div>
+        <div>
+            <button class="btn-action" onclick="window.print()">Imprimir / Guardar como PDF</button>
+            {% if not es_descarga %}
+            <a class="btn-action btn-secondary" href="{{ url_for('reporte_imprimible', tipo=tipo, profesor_id=profesor_id_seleccionado, descargar='1') }}">Descargar Archivo .HTML</a>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="header-univ">
+        <h1>Universidad &bull; Planificación de Oferta Académica y Horarios</h1>
+        <p>Sistema de Organización Horaria por Facultad, Carrera, Salón y Profesor</p>
+        <p>Generado el: {{ fecha_actual }}</p>
+    </div>
+
+    {% if tipo in ('general', 'completo') %}
+        <div class="section-title">1. OFERTA ACADÉMICA GENERAL POR FACULTAD (PROFESORES ORDENADOS)</div>
+
+        {% if not por_facultad %}
+            <p>No hay asignaciones horarias registradas actualmente.</p>
+        {% else %}
+            {% for facultad_nombre, lista_clases in por_facultad.items() %}
+            <div class="facultad-box">
+                <div class="facultad-header">{{ facultad_nombre }} ({{ lista_clases|length }} bloques asignados)</div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="width: 16%;">Profesor</th>
+                            <th style="width: 16%;">Carrera</th>
+                            <th style="width: 18%;">Materia y Sección</th>
+                            <th style="width: 14%;">Día y Hora</th>
+                            <th style="width: 11%;">Salón</th>
+                            <th style="width: 25%;">Detalle de Clase</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for item in lista_clases %}
+                        <tr>
+                            <td><strong>{{ item.profesor_nombre }}</strong></td>
+                            <td>{{ item.carrera_nombre }}</td>
+                            <td><strong>{{ item.materia_nombre }}</strong> ({{ item.seccion }})</td>
+                            <td>{{ item.dia }}<br>{{ item.hora_inicio }} a {{ item.hora_fin }}</td>
+                            <td><strong>{{ item.salon_codigo }}</strong></td>
+                            <td>
+                                El profesor <strong>{{ item.profesor_nombre }}</strong> dará clase los <strong>{{ item.dia }}</strong> en <strong>{{ item.salon_codigo }}</strong> de <strong>{{ item.hora_inicio }} a {{ item.hora_fin }}</strong> de <strong>{{ item.materia_nombre }}</strong>.
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% endfor %}
+        {% endif %}
+    {% endif %}
+
+    {% if tipo in ('profesor', 'completo') %}
+        <div class="section-title {% if tipo == 'completo' %}page-break{% endif %}">
+            2. HORARIOS TIPO CALENDARIO INDIVIDUAL POR PROFESOR
+        </div>
+
+        {% if not calendarios_profesores %}
+            <p>No hay calendarios de profesores disponibles.</p>
+        {% else %}
+            {% for item_cal in calendarios_profesores %}
+            <div class="profesor-card">
+                <div class="facultad-header" style="background: #0f172a;">
+                    Horario Semanal del Profesor: {{ item_cal.profesor.nombre }}
+                </div>
+                <table class="cal-table">
+                    <thead>
+                        <tr>
+                            <th>Hora / Día</th>
+                            {% for d in dias_orden %}
+                                <th>{{ d }}</th>
+                            {% endfor %}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for r in item_cal.rangos_horas %}
+                        <tr>
+                            <td class="hora-col">{{ r }}</td>
+                            {% for d in dias_orden %}
+                            <td>
+                                {% for c in item_cal.matriz[r][d] %}
+                                <div class="cal-item">
+                                    <strong>{{ c.materia_nombre }}</strong><br>
+                                    <span>{{ c.carrera_nombre }}</span><br>
+                                    <span><strong>Salón:</strong> {{ c.salon_codigo }} ({{ c.seccion }})</span>
+                                </div>
+                                {% endfor %}
+                            </td>
+                            {% endfor %}
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% endfor %}
+        {% endif %}
+    {% endif %}
+
+</body>
+</html>

@@ -1,0 +1,191 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+    <div>
+        <h4 class="fw-bold mb-1 text-primary"><i class="bi bi-table me-2"></i>1) Oferta Académica General de la Universidad</h4>
+        <p class="text-muted small mb-0">
+            Organizada por Facultad y con los profesores ordenados alfabéticamente. Puedes filtrar o editar cualquier salón/hora manualmente.
+        </p>
+    </div>
+    <div class="d-flex gap-2">
+        <form action="{{ url_for('reorganizar') }}" method="POST" class="d-inline">
+            <button type="submit" class="btn btn-outline-primary btn-sm fw-semibold">
+                <i class="bi bi-arrow-repeat me-1"></i> Reorganizar Automáticamente
+            </button>
+        </form>
+        <a href="{{ url_for('reporte_imprimible', tipo='general', facultad_id=filtros.facultad_id, print='1') }}" target="_blank" class="btn btn-warning btn-sm fw-bold">
+            <i class="bi bi-printer-fill me-1"></i> Imprimir / Guardar PDF de Oferta
+        </a>
+        <a href="{{ url_for('reporte_imprimible', tipo='general', facultad_id=filtros.facultad_id, descargar='1') }}" class="btn btn-dark btn-sm">
+            <i class="bi bi-download me-1"></i> Descargar .HTML
+        </a>
+    </div>
+</div>
+
+<!-- Barra de Filtros -->
+<div class="card card-panel p-3 mb-4">
+    <form method="GET" action="{{ url_for('oferta_general') }}" class="row g-2 align-items-end">
+        <div class="col-md-3">
+            <label class="form-label small fw-semibold mb-1">Filtrar por Facultad</label>
+            <select name="facultad_id" class="form-select form-select-sm">
+                <option value="">Todas las Facultades</option>
+                {% for f in facultades %}
+                    <option value="{{ f.id }}" {% if filtros.facultad_id == f.id %}selected{% endif %}>{{ f.nombre }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-md-2">
+            <label class="form-label small fw-semibold mb-1">Carrera</label>
+            <select name="carrera_id" class="form-select form-select-sm">
+                <option value="">Todas las Carreras</option>
+                {% for c in carreras %}
+                    <option value="{{ c.id }}" {% if filtros.carrera_id == c.id %}selected{% endif %}>{{ c.nombre }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-md-3">
+            <label class="form-label small fw-semibold mb-1">Profesor</label>
+            <select name="profesor_id" class="form-select form-select-sm">
+                <option value="">Todos los Profesores</option>
+                {% for p in profesores %}
+                    <option value="{{ p.id }}" {% if filtros.profesor_id == p.id %}selected{% endif %}>{{ p.nombre }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-md-2">
+            <label class="form-label small fw-semibold mb-1">Salón</label>
+            <select name="salon_id" class="form-select form-select-sm">
+                <option value="">Todos los Salones</option>
+                {% for s in salones %}
+                    <option value="{{ s.id }}" {% if filtros.salon_id == s.id %}selected{% endif %}>{{ s.codigo }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-md-2 d-flex gap-1">
+            <button type="submit" class="btn btn-primary btn-sm w-100 fw-semibold">
+                <i class="bi bi-funnel-fill me-1"></i> Filtrar
+            </button>
+            <a href="{{ url_for('oferta_general') }}" class="btn btn-outline-secondary btn-sm" title="Limpiar filtros">
+                <i class="bi bi-x-lg"></i>
+            </a>
+        </div>
+    </form>
+</div>
+
+{% if not por_facultad %}
+<div class="alert alert-info text-center p-4">
+    <i class="bi bi-info-circle fs-3 d-block mb-2"></i>
+    No hay horarios registrados con los filtros seleccionados. Ve al panel de inicio para cargar un archivo Excel, Word, TXT o los datos de demostración.
+</div>
+{% else %}
+    {% for facultad_nombre, lista_clases in por_facultad.items() %}
+    <div class="card card-panel mb-4 overflow-hidden">
+        <div class="card-header bg-primary text-white py-3 d-flex justify-content-between align-items-center">
+            <h5 class="mb-0 fw-bold"><i class="bi bi-bank2 me-2"></i>{{ facultad_nombre }}</h5>
+            <span class="badge bg-light text-primary fw-bold">{{ lista_clases|length }} bloques programados</span>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead class="table-light small text-uppercase">
+                    <tr>
+                        <th>Profesor (Ordenado)</th>
+                        <th>Carrera</th>
+                        <th>Materia y Sección</th>
+                        <th>Día</th>
+                        <th>Horario</th>
+                        <th>Salón</th>
+                        <th>Descripción de la Oferta Académica</th>
+                        <th class="text-end">Ajuste Manual</th>
+                    </tr>
+                </thead>
+                <tbody class="small">
+                    {% for item in lista_clases %}
+                    <tr>
+                        <td class="fw-bold">
+                            <a href="{{ url_for('calendario_profesores', profesor_id=item.profesor_id) }}" class="text-decoration-none text-dark">
+                                <i class="bi bi-person-Vcard text-primary me-1"></i>{{ item.profesor_nombre }}
+                            </a>
+                        </td>
+                        <td><span class="badge badge-carrera">{{ item.carrera_nombre }}</span></td>
+                        <td>
+                            <div class="fw-bold text-primary">{{ item.materia_nombre }}</div>
+                            <span class="text-muted">{{ item.seccion }} &bull; {{ item.semestre }}</span>
+                        </td>
+                        <td class="fw-semibold">{{ item.dia }}</td>
+                        <td class="fw-semibold text-nowrap">{{ item.hora_inicio }} - {{ item.hora_fin }}</td>
+                        <td>
+                            <a href="{{ url_for('ocupacion_salones', salon_id=item.salon_id) }}" class="badge badge-salon text-decoration-none">
+                                <i class="bi bi-door-open me-1"></i>{{ item.salon_codigo }}
+                            </a>
+                        </td>
+                        <td class="text-secondary" style="max-width: 340px;">
+                            El profesor <strong>{{ item.profesor_nombre }}</strong> va a dar clase los <strong>{{ item.dia }}</strong> en <strong>{{ item.salon_codigo }}</strong> de <strong>{{ item.hora_inicio }} a {{ item.hora_fin }}</strong> de la materia <strong>{{ item.materia_nombre }}</strong> ({{ item.carrera_nombre }}).
+                        </td>
+                        <td class="text-end">
+                            <button class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#modalEditar{{ item.asignacion_id }}">
+                                <i class="bi bi-pencil-square"></i> Cambiar
+                            </button>
+                        </td>
+                    </tr>
+
+                    <!-- Modal de Edición Manual con Validación de Choques -->
+                    <div class="modal fade" id="modalEditar{{ item.asignacion_id }}" tabindex="-1">
+                        <div class="modal-dialog">
+                            <form action="{{ url_for('editar_asignacion') }}" method="POST" class="modal-content">
+                                <div class="modal-header">
+                                    <h6 class="modal-title fw-bold">Ajustar Horario / Salón Manualmente</h6>
+                                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                                </div>
+                                <div class="modal-body">
+                                    <input type="hidden" name="asignacion_id" value="{{ item.asignacion_id }}">
+                                    <p class="small text-muted mb-3">
+                                        <strong>Profesor:</strong> {{ item.profesor_nombre }}<br>
+                                        <strong>Materia:</strong> {{ item.materia_nombre }} ({{ item.carrera_nombre }})
+                                    </p>
+                                    <div class="mb-3">
+                                        <label class="form-label small fw-semibold">Salón:</label>
+                                        <select name="salon_id" class="form-select form-select-sm">
+                                            {% for s in salones %}
+                                                <option value="{{ s.id }}" {% if s.id == item.salon_id %}selected{% endif %}>
+                                                    {{ s.codigo }} ({{ s.edificio }})
+                                                </option>
+                                            {% endfor %}
+                                        </select>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label small fw-semibold">Día de la Semana:</label>
+                                        <select name="dia" class="form-select form-select-sm">
+                                            {% for d in dias_orden %}
+                                                <option value="{{ d }}" {% if d == item.dia %}selected{% endif %}>{{ d }}</option>
+                                            {% endfor %}
+                                        </select>
+                                    </div>
+                                    <div class="mb-2">
+                                        <label class="form-label small fw-semibold">Bloque Horario:</label>
+                                        <select name="rango_hora" class="form-select form-select-sm">
+                                            {% for b_ini, b_fin in bloques_horarios %}
+                                                {% set r_str = b_ini ~ '-' ~ b_fin %}
+                                                <option value="{{ r_str }}" {% if b_ini == item.hora_inicio and b_fin == item.hora_fin %}selected{% endif %}>
+                                                    {{ b_ini }} a {{ b_fin }}
+                                                </option>
+                                            {% endfor %}
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="modal-footer">
+                                    <button type="button" class="btn btn-light btn-sm" data-bs-dismiss="modal">Cancelar</button>
+                                    <button type="submit" class="btn btn-primary btn-sm fw-semibold">Guardar sin Choques</button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endfor %}
+{% endif %}
+
+{% endblock %}

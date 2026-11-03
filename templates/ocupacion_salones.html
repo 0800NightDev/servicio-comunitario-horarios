@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+    <div>
+        <h4 class="fw-bold mb-1 text-primary"><i class="bi bi-building me-2"></i>Ocupación de Salones (Múltiples Materias y Carreras)</h4>
+        <p class="text-muted small mb-0">
+            En un mismo salón se dictan diferentes materias de distintas carreras y facultades en horarios sin solapamiento.
+        </p>
+    </div>
+</div>
+
+<div class="card card-panel p-3 mb-4">
+    <form method="GET" action="{{ url_for('ocupacion_salones') }}" class="row g-2 align-items-center">
+        <div class="col-md-5">
+            <label class="form-label small fw-semibold mb-1">Seleccionar Salón / Laboratorio:</label>
+            <select name="salon_id" class="form-select form-select-sm" onchange="this.form.submit()">
+                {% for s in salones %}
+                    <option value="{{ s.id }}" {% if salon_actual and salon_actual.id == s.id %}selected{% endif %}>
+                        {{ s.codigo }} — {{ s.edificio }} (Capacidad: {{ s.capacidad }})
+                    </option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-md-7 text-md-end pt-3">
+            {% if salon_actual %}
+                <span class="badge bg-success">{{ asignaciones|length }} clases asignadas en este salón</span>
+            {% endif %}
+        </div>
+    </form>
+</div>
+
+{% if salon_actual %}
+<div class="card card-panel overflow-hidden">
+    <div class="card-header bg-success text-white py-3 d-flex justify-content-between align-items-center">
+        <h5 class="mb-0 fw-bold"><i class="bi bi-door-open-fill me-2"></i>Calendario del Salón: {{ salon_actual.codigo }} ({{ salon_actual.edificio }})</h5>
+        <span class="badge bg-light text-success fw-bold">Capacidad: {{ salon_actual.capacidad }} est.</span>
+    </div>
+    <div class="table-responsive p-3">
+        <table class="table table-bordered calendar-table mb-0">
+            <thead>
+                <tr>
+                    <th style="width: 130px;">Bloque Horario</th>
+                    {% for d in dias_orden %}
+                        <th>{{ d }}</th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for r in rangos_horas %}
+                <tr>
+                    <td class="fw-bold text-center align-middle bg-light small text-nowrap">{{ r }}</td>
+                    {% for d in dias_orden %}
+                    <td class="calendar-cell">
+                        {% for c in matriz[r][d] %}
+                        <div class="class-block" style="border-left-color: #16a34a; background: #f0fdf4;">
+                            <span class="materia-title" style="color: #166534;">{{ c.materia_nombre }}</span>
+                            <div class="fw-bold text-dark"><i class="bi bi-person-fill me-1"></i>Prof. {{ c.profesor_nombre }}</div>
+                            <div class="mt-1">
+                                <span class="badge badge-carrera">{{ c.carrera_nombre }}</span>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </td>
+                    {% endfor %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+{% endblock %}

@@ -1,0 +1,8 @@
+Facultad | Carrera | Profesor | Materia | Disponibilidad | Salón Preferido | Sección | Semestre | Bloques
+Facultad de Ingeniería | Ingeniería de Sistemas | Juan Pérez | Programación I, Estructuras de Datos | Lunes 07:00-11:00; Miércoles 07:00-11:00; Viernes 09:00-11:00 | Lab Computación 1 | Sección A | 2do Semestre | 2
+Facultad de Ingeniería | Ingeniería Civil / Ingeniería Industrial | Juan Pérez | Cálculo I | Martes 07:00-11:00; Jueves 07:00-11:00 | Aula 101 | Sección B | 1er Semestre | 1
+Facultad de Ingeniería | Ingeniería de Sistemas | María Rodríguez | Bases de Datos, Ingeniería de Software | Martes 09:00-13:00; Jueves 09:00-13:00; Viernes 14:00-18:00 | Lab Computación 2 | Sección A | 5to Semestre | 2
+Facultad de Ciencias Económicas y Sociales | Administración de Empresas | Carlos Gómez | Contabilidad General, Microeconomía | Lunes 09:00-13:00; Miércoles 09:00-13:00; Jueves 14:00-16:00 | Aula 101 | Sección A | 2do Semestre | 1
+Facultad de Ciencias Económicas y Sociales | Contaduría Pública | Carlos Gómez | Auditoría Financiera | Martes 14:00-18:00; Viernes 07:00-11:00 | Aula 102 | Sección Única | 6to Semestre | 1
+Facultad de Ciencias de la Salud | Medicina / Enfermería | Ana Martínez | Anatomía Humana, Fisiología | Lunes 07:00-13:00; Miércoles 14:00-18:00; Viernes 07:00-11:00 | Aula Magna 301 | Sección A | 1er Semestre | 1
+Facultad de Humanidades y Educación | Educación Mención Integral | Luis Hernández | Psicología Educativa, Didáctica General | Martes 07:00-11:00; Jueves 07:00-11:00; Sábado 09:00-13:00 | Aula 201 | Sección A | 3er Semestre | 1

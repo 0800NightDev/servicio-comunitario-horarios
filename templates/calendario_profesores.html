@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+    <div>
+        <h4 class="fw-bold mb-1 text-primary"><i class="bi bi-calendar3-week me-2"></i>2) Horario Tipo Calendario de Cada Profesor</h4>
+        <p class="text-muted small mb-0">
+            Visualiza la grilla semanal de cada profesor con todas las materias y carreras que dicta, o muéstralos todos a la vez.
+        </p>
+    </div>
+    <div class="d-flex gap-2">
+        {% if not mostrar_todos %}
+            <a href="{{ url_for('calendario_profesores', todos='1') }}" class="btn btn-outline-primary btn-sm fw-semibold">
+                <i class="bi bi-grid-3x3-gap me-1"></i> Ver Todos los Profesores Juntos
+            </a>
+        {% else %}
+            <a href="{{ url_for('calendario_profesores') }}" class="btn btn-outline-secondary btn-sm fw-semibold">
+                <i class="bi bi-person me-1"></i> Ver Vista Individual
+            </a>
+        {% endif %}
+        <button type="button" class="btn btn-warning btn-sm fw-bold" data-bs-toggle="modal" data-bs-target="#modalImprimirProfesor">
+            <i class="bi bi-printer-fill me-1"></i> Imprimir Horario (Elegir Todos o 1 Profesor)
+        </button>
+    </div>
+</div>
+
+<!-- Selector de Profesor -->
+<div class="card card-panel p-3 mb-4">
+    <form method="GET" action="{{ url_for('calendario_profesores') }}" class="row g-2 align-items-center">
+        <div class="col-md-5">
+            <label class="form-label small fw-semibold mb-1">Seleccionar Profesor (Ordenados Alfabéticamente):</label>
+            <select name="profesor_id" class="form-select form-select-sm" onchange="this.form.submit()">
+                {% for p in profesores %}
+                    <option value="{{ p.id }}" {% if profesor_actual and profesor_actual.id == p.id %}selected{% endif %}>
+                        {{ p.nombre }}
+                    </option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-md-7 text-md-end pt-3">
+            {% if disponibilidades and not mostrar_todos %}
+                <span class="small text-muted fw-semibold me-2">Disponibilidad declarada:</span>
+                {% for disp in disponibilidades[:6] %}
+                    <span class="badge bg-light text-secondary border">{{ disp.dia }} {{ disp.hora_inicio }}-{{ disp.hora_fin }}</span>
+                {% endfor %}
+                {% if disponibilidades|length > 6 %}
+                    <span class="badge bg-light text-secondary border">+{{ disponibilidades|length - 6 }} más</span>
+                {% endif %}
+            {% endif %}
+        </div>
+    </form>
+</div>
+
+{% if not profesores %}
+<div class="alert alert-info text-center p-4">
+    No hay profesores registrados aún. Carga un archivo Excel, Word o TXT en el panel principal.
+</div>
+{% elif mostrar_todos %}
+    {% for item_cal in calendarios_todos %}
+    <div class="card card-panel mb-4 overflow-hidden">
+        <div class="card-header bg-dark text-white py-3 d-flex justify-content-between align-items-center">
+            <h5 class="mb-0 fw-bold"><i class="bi bi-person-workspace me-2 text-warning"></i>Prof. {{ item_cal.profesor.nombre }}</h5>
+            <span class="badge bg-warning text-dark">{{ item_cal.asignaciones|length }} bloques semanales</span>
+        </div>
+        <div class="table-responsive p-3">
+            <table class="table table-bordered calendar-table mb-0">
+                <thead>
+                    <tr>
+                        <th style="width: 120px;">Hora / Día</th>
+                        {% for d in dias_orden %}
+                            <th>{{ d }}</th>
+                        {% endfor %}
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for r in item_cal.rangos_horas %}
+                    <tr>
+                        <td class="fw-bold text-center align-middle bg-light small text-nowrap">{{ r }}</td>
+                        {% for d in dias_orden %}
+                        <td class="calendar-cell">
+                            {% for c in item_cal.matriz[r][d] %}
+                            <div class="class-block">
+                                <span class="materia-title">{{ c.materia_nombre }}</span>
+                                <div class="text-secondary">{{ c.carrera_nombre }}</div>
+                                <div class="mt-1 d-flex justify-content-between align-items-center">
+                                    <span class="badge badge-salon">{{ c.salon_codigo }}</span>
+                                    <span class="text-muted">{{ c.seccion }}</span>
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </td>
+                        {% endfor %}
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endfor %}
+{% elif profesor_actual %}
+    <div class="card card-panel overflow-hidden mb-4">
+        <div class="card-header bg-primary text-white py-3 d-flex justify-content-between align-items-center">
+            <div>
+                <h5 class="mb-0 fw-bold"><i class="bi bi-person-workspace me-2"></i>Horario Tipo Calendario: Prof. {{ profesor_actual.nombre }}</h5>
+            </div>
+            <span class="badge bg-light text-primary fw-bold">{{ asignaciones|length }} bloques asignados</span>
+        </div>
+        <div class="table-responsive p-3">
+            <table class="table table-bordered calendar-table mb-0">
+                <thead>
+                    <tr>
+                        <th style="width: 130px;">Bloque Horario</th>
+                        {% for d in dias_orden %}
+                            <th>{{ d }}</th>
+                        {% endfor %}
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for r in rangos_horas %}
+                    <tr>
+                        <td class="fw-bold text-center align-middle bg-light small text-nowrap">{{ r }}</td>
+                        {% for d in dias_orden %}
+                        <td class="calendar-cell">
+                            {% for c in matriz[r][d] %}
+                            <div class="class-block">
+                                <span class="materia-title">{{ c.materia_nombre }}</span>
+                                <div class="text-secondary fw-semibold">{{ c.carrera_nombre }}</div>
+                                <div class="text-muted small">{{ c.facultad_nombre }}</div>
+                                <div class="mt-1 d-flex justify-content-between align-items-center">
+                                    <span class="badge badge-salon"><i class="bi bi-geo-alt-fill me-1"></i>{{ c.salon_codigo }}</span>
+                                    <span class="text-muted">{{ c.seccion }}</span>
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </td>
+                        {% endfor %}
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+{% endif %}
+
+{% endblock %}
