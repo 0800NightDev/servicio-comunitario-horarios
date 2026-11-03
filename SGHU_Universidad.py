@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 ===========================================================================
-UPEL – Sistema de Oferta Academica  |  Prototipo Interactivo v1.0
+Universidad Simon Rodriguez (UNESR) – Sistema de Oferta Academica | v1.0
 Framework: Flet  |  Nucleo: Palo Verde  |  Periodo: 2026-2
 Integrado con Backend SQLite, Carga Multi-Formato (.xlsx, .docx, .txt)
 y Generador de Reportes HTML / PDF Imprimibles.
@@ -566,7 +566,7 @@ def generar_reporte_html_imprimible(
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<title>Reporte Oficial UPEL - Oferta Académica y Horarios 2026-2</title>
+<title>Reporte Oficial Universidad Simón Rodríguez - Oferta Académica y Horarios 2026-2</title>
 <style>
     * {{ box-sizing: border-box; }}
     body {{
@@ -672,15 +672,15 @@ def generar_reporte_html_imprimible(
 <body>
     <div class="no-print">
         <div>
-            <strong>UPEL - Núcleo Palo Verde | Vista Oficial de Impresión HTML / PDF</strong><br>
+            <strong>Universidad Simón Rodríguez (UNESR) - Núcleo Palo Verde | Vista Oficial de Impresión HTML / PDF</strong><br>
             <span style="font-size:11px;color:#B0BEC5;">Usa el botón derecho para imprimir en papel o elegir "Guardar como PDF".</span>
         </div>
         <button class="btn-print" onclick="window.print()">Imprimir / Guardar como PDF</button>
     </div>
 
     <div class="header">
-        <h1>Universidad Pedagógica Experimental Libertador / USR — Núcleo Palo Verde</h1>
-        <p><strong>Sistema de Oferta Académica y Horarios por Facultad y Docente — Periodo 2026-2</strong></p>
+        <h1>Universidad Nacional Experimental Simón Rodríguez (UNESR) — Núcleo Palo Verde</h1>
+        <p><strong>Sistema de Oferta Académica y Horarios por Carrera y Docente — Periodo 2026-2</strong></p>
         <p>Generado el: {fecha_str} &bull; Total asignaciones: {len(entradas)} &bull; Conflictos: 0</p>
     </div>
 """]
@@ -859,7 +859,7 @@ class App:
 
     def _setup(self):
         p = self.page
-        p.title      = "UPEL - Oferta Academica 2026-2"
+        p.title      = "Universidad Simon Rodriguez - Oferta Academica 2026-2"
         p.theme_mode = ft.ThemeMode.DARK
         p.bgcolor    = BG_P
         p.padding    = 0
@@ -942,7 +942,7 @@ class App:
         self.motor, self._all = _seed_data(forzar_base=True)
         if DOCENTES:
             self.docente_calendario_sel = DOCENTES[0]
-        self.ultimo_mensaje = "Datos base del prototipo UPEL (33 cursos) cargados correctamente."
+        self.ultimo_mensaje = "Datos base de la Universidad Simon Rodriguez (33 cursos) cargados correctamente."
         self._sb_refresh()
         self._mc_refresh()
         self.page.update()
@@ -1154,7 +1154,7 @@ class App:
 
         controles_sup = [
             ft.Row([
-                titulo("Dashboard","Sistema de Gestion de Oferta Academica - UPEL Palo Verde"),
+                titulo("Dashboard","Sistema de Gestion de Oferta Academica - Universidad Simon Rodriguez (Palo Verde)"),
                 ft.Container(expand=True),
                 btn_cargar_arch,
                 btn_imprimir_rep,

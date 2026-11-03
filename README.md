@@ -1,6 +1,6 @@
-# UPEL — Sistema de Oferta Académica y Gestión de Horarios (Núcleo Palo Verde)
+# Universidad Simón Rodríguez (UNESR) — Sistema de Oferta Académica y Gestión de Horarios (Núcleo Palo Verde)
 
-Sistema interactivo de escritorio desarrollado en **Python (Flet + SQLite)** para organizar la oferta académica universitaria por carrera/facultad, asignar horarios y ambientes sin conflictos de forma automática, e importar cargas académicas desde archivos **Excel (`.xlsx`)**, **Word (`.docx`)** y **Texto (`.txt` / `.csv`)**.
+Sistema interactivo de escritorio desarrollado en **Python (Flet + SQLite)** para la **Universidad Nacional Experimental Simón Rodríguez (UNESR / USR) — Núcleo Palo Verde**, diseñado para organizar la oferta académica universitaria por carrera/facultad, asignar horarios y ambientes sin conflictos de forma automática, e importar cargas académicas desde archivos **Excel (`.xlsx`)**, **Word (`.docx`)** y **Texto (`.txt` / `.csv`)**.
 
 ---
 
