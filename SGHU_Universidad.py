@@ -8,14 +8,19 @@ y Generador de Reportes HTML / PDF Imprimibles.
 ===========================================================================
 """
 import os
+import sys
+import shutil
+import subprocess
 import sqlite3
 import unicodedata
 import webbrowser
+import base64
 from datetime import datetime
 import flet as ft
 from typing import Dict, List, Optional, Tuple
 
 from database import (
+    BASE_DIR,
     init_db,
     get_connection,
     clear_all_data,
@@ -24,9 +29,54 @@ from database import (
     get_or_create_profesor,
     get_or_create_materia,
     get_or_create_salon,
+    actualizar_ambiente_por_docente_materia,
+    actualizar_ambiente_profesor,
+    obtener_info_profesores_dict,
+    marcar_iniciar_en_blanco,
+    esta_en_modo_blanco,
 )
-from parsers import importar_excel, importar_docx, importar_txt
+from parsers import (
+    importar_excel,
+    importar_docx,
+    importar_txt,
+    importar_pdf_o_imagen,
+    extraer_datos_disponibilidad,
+    extraer_texto_pdf,
+    extraer_texto_imagen,
+    integrar_disponibilidad_docente_bd,
+)
 from scheduler import generar_horarios_automaticos
+
+# ── LOGO OFICIAL UNESR OPTIMIZADO ──
+LOGO_UNESR_PATH = os.path.join(BASE_DIR, "src", "UNESR.png")
+LOGO_UNESR_B64 = ""
+if os.path.isfile(LOGO_UNESR_PATH):
+    try:
+        with open(LOGO_UNESR_PATH, "rb") as _f_logo:
+            LOGO_UNESR_B64 = base64.b64encode(_f_logo.read()).decode("utf-8")
+    except Exception as _ex_logo:
+        print(f"[Aviso Logo UNESR]: {_ex_logo}")
+
+
+def obtener_logo_unesr(tamano: int = 42, tooltip: str = "") -> ft.Control:
+    """Retorna el logo oficial de la UNESR optimizado en memoria para máxima velocidad."""
+    if LOGO_UNESR_B64:
+        return ft.Image(
+            src_base64=LOGO_UNESR_B64,
+            width=tamano,
+            height=tamano,
+            fit=ft.ImageFit.CONTAIN,
+            tooltip=tooltip if tooltip else None,
+        )
+    elif os.path.isfile(LOGO_UNESR_PATH):
+        return ft.Image(
+            src=LOGO_UNESR_PATH,
+            width=tamano,
+            height=tamano,
+            fit=ft.ImageFit.CONTAIN,
+            tooltip=tooltip if tooltip else None,
+        )
+    return ft.Icon(ft.Icons.SCHOOL_ROUNDED, color=BLUE, size=tamano)
 
 
 def importar_archivo(filepath: str) -> Dict:
@@ -74,26 +124,51 @@ def _mo(left=0, top=0, right=0, bottom=0) -> ft.Margin:
     return ft.Margin(left=left, top=top, right=right, bottom=bottom)
 
 # ═══════════════════════════════════════════════════════
-#  PALETA Y CONFIGURACIÓN
+#  PALETA Y CONFIGURACIÓN (MODO CLARO INSTITUCIONAL POR DEFECTO)
 # ═══════════════════════════════════════════════════════
 
-BG_P  = "#0D1B2A"   # primario
-BG_C  = "#152235"   # cards
-BG_SB = "#0A1628"   # sidebar
-BG_IN = "#1A2F45"   # inputs
-BG_RA = "#12203A"   # filas alternas
+BG_P   = "#F8FAFC"   # Fondo principal descansado a la vista (Slate-50)
+BG_C   = "#FFFFFF"   # Tarjetas y paneles elevados (Blanco puro)
+BG_SB  = "#FFFFFF"   # Barra lateral (Blanco institucional)
+BG_IN  = "#F1F5F9"   # Inputs y encabezados de tabla (Slate-100 suave)
+BG_RA  = "#F8FAFC"   # Filas alternas
+BOR    = "#E2E8F0"   # Bordes suaves (Slate-200)
 
-BLUE  = "#2196F3"
-PURP  = "#7C4DFF"
-GRN   = "#00E676"
-ORG   = "#FF9800"
-RED   = "#FF5252"
-CYAN  = "#00BCD4"
+TW     = "#0F172A"   # Títulos y texto de alto contraste (Slate-900)
+TL     = "#334155"   # Texto de lectura / cuerpo (Slate-700)
+TG     = "#64748B"   # Texto atenuado/etiquetas (Slate-500)
+WHITE  = "#FFFFFF"   # Texto blanco para botones con fondo sólido (BLUE, PURP)
 
-TW    = "#FFFFFF"
-TG    = "#78909C"
-TL    = "#B0BEC5"
-BOR   = "#1E3A52"
+BLUE   = "#1D4ED8"   # Azul institucional UNESR
+PURP   = "#6D28D9"   # Púrpura universitario
+GRN    = "#059669"   # Verde esmeralda (0 conflictos)
+ORG    = "#D97706"   # Ámbar/Naranja (ambientes)
+RED    = "#DC2626"   # Rojo alerta
+CYAN   = "#0284C7"   # Cian informativo
+
+def _set_light_palette():
+    global BG_P, BG_C, BG_SB, BG_IN, BG_RA, BOR, TW, TL, TG
+    BG_P  = "#F8FAFC"
+    BG_C  = "#FFFFFF"
+    BG_SB = "#FFFFFF"
+    BG_IN = "#F1F5F9"
+    BG_RA = "#F8FAFC"
+    BOR   = "#E2E8F0"
+    TW    = "#0F172A"
+    TL    = "#334155"
+    TG    = "#64748B"
+
+def _set_dark_palette():
+    global BG_P, BG_C, BG_SB, BG_IN, BG_RA, BOR, TW, TL, TG
+    BG_P  = "#0D1B2A"
+    BG_C  = "#152235"
+    BG_SB = "#0A1628"
+    BG_IN = "#1A2F45"
+    BG_RA = "#12203A"
+    BOR   = "#1E3A52"
+    TW    = "#FFFFFF"
+    TL    = "#B0BEC5"
+    TG    = "#78909C"
 
 MAX_EST = 45
 MAX_AMB = 30
@@ -258,6 +333,25 @@ class Motor:
         self._sd.clear()
         self._u.clear()
         self._lista.clear()
+
+    def cambiar_ambiente(self, entry: Dict, nuevo_ambiente: str):
+        nuevo_amb_up = nuevo_ambiente.strip().upper()
+        viejo_amb = entry.get("ambiente", "")
+        d = entry.get("dia", "")
+        f = entry.get("franja", "")
+        if (d, f, viejo_amb) in self._sa:
+            del self._sa[(d, f, viejo_amb)]
+        entry["ambiente"] = nuevo_amb_up
+        self._sa[(d, f, nuevo_amb_up)] = entry
+        self._u.add(nuevo_amb_up)
+        if nuevo_amb_up not in AMBIENTES:
+            AMBIENTES.append(nuevo_amb_up)
+        actualizar_ambiente_por_docente_materia(
+            entry.get("docente", ""),
+            entry.get("materia", ""),
+            entry.get("dia", ""),
+            nuevo_amb_up,
+        )
 
     def _slot(self, doc: str, dia_pref: str = "", franja_pref: str = "", amb_pref: str = "") -> Optional[Dict]:
         # Si viene con día/franja/ambiente desde archivo o preferencia, intentar asignarlo
@@ -519,8 +613,17 @@ def _seed_data(forzar_base: bool = False) -> Tuple[Motor, List[Dict]]:
         existentes = m.sincronizar_desde_sqlite()
         if existentes:
             return m, existentes
+        # Por defecto, el sistema se mantiene en blanco listo para registrar cursos nuevos
+        marcar_iniciar_en_blanco(True)
+        CARRERAS.clear()
+        CARRERAS.update({k: dict(v) for k, v in CARRERAS_BASE.items()})
+        AMBIENTES.clear()
+        AMBIENTES.extend(AMBIENTES_BASE)
+        DOCENTES.clear()
+        return m, []
 
-    clear_all_data(keep_salones=False)
+    marcar_iniciar_en_blanco(False)
+    clear_all_data(keep_salones=True)
     CARRERAS.clear()
     CARRERAS.update({k: dict(v) for k, v in CARRERAS_BASE.items()})
     DOCENTES.clear()
@@ -894,6 +997,130 @@ def clave_orden_ambiente(codigo: str):
     import re
     return [int(t) if t.isdigit() else t for t in re.split(r'(\d+)', str(codigo).upper())]
 
+
+def abrir_selector_archivo_os(titulo: str = "Seleccionar archivo", extensiones: Optional[List[str]] = None) -> Optional[str]:
+    """
+    Abre un diálogo nativo de selección de archivos en Linux (Zenity / Kdialog),
+    Windows (PowerShell Forms) o macOS (osascript), sin depender de libtk8.6.so.
+    Retorna:
+      - str con la ruta si el usuario seleccionó un archivo.
+      - "" (cadena vacía) si el usuario canceló la selección voluntariamente.
+      - None si ningún diálogo gráfico nativo pudo ejecutarse en el SO.
+    """
+    if extensiones is None:
+        extensiones = [".pdf", ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".xlsx", ".docx", ".txt", ".csv"]
+
+    # 1. En Linux: intentar Zenity (estándar en GNOME, XFCE, Canaima, Debian, Arch y Wayland)
+    if shutil.which("zenity"):
+        try:
+            cmd = ["zenity", "--file-selection", f"--title={titulo}"]
+            patrones = " ".join("*" + (e if e.startswith(".") else "." + e) for e in extensiones)
+            cmd.append(f"--file-filter=Archivos soportados | {patrones}")
+            cmd.append("--file-filter=Todos los archivos | *")
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if res.returncode == 0 and res.stdout.strip():
+                return res.stdout.strip()
+            elif res.returncode == 1 or not res.stdout.strip():
+                return ""  # Cancelado por el usuario
+        except Exception as ex:
+            print(f"[Aviso Zenity]: {ex}")
+
+    # 2. En Linux: intentar kdialog (KDE Plasma)
+    if shutil.which("kdialog"):
+        try:
+            patrones = " ".join("*" + (e if e.startswith(".") else "." + e) for e in extensiones)
+            cmd = ["kdialog", "--getopenfilename", os.path.expanduser("~"), patrones]
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if res.returncode == 0 and res.stdout.strip():
+                return res.stdout.strip()
+            elif res.returncode == 1:
+                return ""
+        except Exception as ex:
+            print(f"[Aviso Kdialog]: {ex}")
+
+    # 3. En Windows: intentar PowerShell OpenFileDialog nativo
+    if sys.platform == "win32":
+        try:
+            patrones = ";".join("*" + (e if e.startswith(".") else "." + e) for e in extensiones)
+            ps_script = (
+                '[System.Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms") | Out-Null; '
+                '$f = New-Object System.Windows.Forms.OpenFileDialog; '
+                f'$f.Title = "{titulo}"; '
+                f'$f.Filter = "Archivos soportados ({patrones})|{patrones}|Todos los archivos (*.*)|*.*"; '
+                'if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $f.FileName }'
+            )
+            res = subprocess.run(["powershell", "-NoProfile", "-Command", ps_script], capture_output=True, text=True, timeout=120)
+            if res.returncode == 0 and res.stdout.strip():
+                return res.stdout.strip()
+            elif res.returncode == 0 and not res.stdout.strip():
+                return ""
+        except Exception as ex:
+            print(f"[Aviso Windows OpenFileDialog]: {ex}")
+
+    # 4. En macOS: intentar osascript
+    if sys.platform == "darwin":
+        try:
+            res = subprocess.run(
+                ["osascript", "-e", f'POSIX path of (choose file with prompt "{titulo}")'],
+                capture_output=True, text=True, timeout=120
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                return res.stdout.strip()
+            return ""
+        except Exception:
+            pass
+
+    # 5. Intentar tkinter protegido contra ImportError / missing libtk
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        ruta = filedialog.askopenfilename(title=titulo)
+        root.destroy()
+        if ruta:
+            return ruta
+        return ""
+    except Exception:
+        pass
+
+    return None
+
+
+def buscar_archivos_recientes_sistema(extensiones: Optional[Tuple[str, ...]] = None) -> List[str]:
+    """Busca archivos recientes en las carpetas comunes del usuario (Descargas, Escritorio, etc.)."""
+    if extensiones is None:
+        extensiones = (".pdf", ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".xlsx", ".docx", ".txt")
+    carpetas = [
+        os.path.expanduser("~/Descargas"),
+        os.path.expanduser("~/Downloads"),
+        os.path.expanduser("~/Escritorio"),
+        os.path.expanduser("~/Desktop"),
+        BASE_DIR,
+        os.path.join(BASE_DIR, "uploads"),
+    ]
+    encontrados = []
+    for c in carpetas:
+        if os.path.isdir(c):
+            try:
+                for f in os.listdir(c):
+                    if any(f.lower().endswith(ext) for ext in extensiones):
+                        full_p = os.path.join(c, f)
+                        if os.path.isfile(full_p):
+                            encontrados.append((os.path.getmtime(full_p), full_p))
+            except Exception:
+                pass
+    encontrados.sort(reverse=True, key=lambda x: x[0])
+    vistos = set()
+    unicos = []
+    for _, p in encontrados:
+        if p not in vistos:
+            vistos.add(p)
+            unicos.append(p)
+    return unicos[:8]
+
+
 # ═══════════════════════════════════════════════════════
 #  APP
 # ═══════════════════════════════════════════════════════
@@ -934,14 +1161,21 @@ class App:
         self.docentes_pag = 1
         self.docentes_rpp = 15
 
+        # FilePickers de Flet para fallback
+        self.fp_hoja = ft.FilePicker(on_result=self._on_fp_hoja_result)
+        self.fp_arch = ft.FilePicker(on_result=self._on_fp_arch_result)
+
+        # Estado del menú lateral: expandido (True) o contraído (False)
+        self.sb_expandido = True
+
         self._setup()
         self._build()
         self._nav("dashboard")
 
     def _setup(self):
         p = self.page
-        p.title      = "Universidad Simon Rodriguez - Oferta Academica 2026-2"
-        p.theme_mode = ft.ThemeMode.DARK
+        p.title      = "Universidad Nacional Experimental Simón Rodríguez (UNESR) - Oferta Académica 2026-2"
+        p.theme_mode = ft.ThemeMode.LIGHT
         p.bgcolor    = BG_P
         p.padding    = 0
         p.spacing    = 0
@@ -955,10 +1189,14 @@ class App:
             pass
 
     def _build(self):
+        self.page.overlay.extend([self.fp_hoja, self.fp_arch])
         self.sb_col = ft.Column(spacing=0, expand=True)
         self.sb     = ft.Container(
-            content=self.sb_col, width=240, bgcolor=BG_SB,
+            content=self.sb_col,
+            width=250 if self.sb_expandido else 72,
+            bgcolor=BG_SB,
             border=_br(1, BOR),
+            animate=ft.Animation(200, ft.AnimationCurve.EASE_OUT),
         )
         self.mc_col = ft.Column(scroll=ft.ScrollMode.AUTO, spacing=0, expand=True)
         self.mc     = ft.Container(
@@ -967,56 +1205,705 @@ class App:
         )
         self.page.add(ft.Row([self.sb, self.mc], spacing=0, expand=True))
 
+    def _toggle_sb(self, e=None):
+        """Alterna el menú lateral entre contraído (solo logo UNESR) y expandido."""
+        self.sb_expandido = not self.sb_expandido
+        self.sb.width = 250 if self.sb_expandido else 72
+        self._sb_refresh()
+        try:
+            if getattr(self.sb, "page", None):
+                self.sb.update()
+            elif hasattr(self.page, "update"):
+                self.page.update()
+        except Exception:
+            if hasattr(self.page, "update"):
+                self.page.update()
+
     def _nav(self, v: str):
         self.vista = v
         self._sb_refresh()
         self._mc_refresh()
         self.page.update()
 
-    # ── ACCIÓN DE CARGA DE ARCHIVOS (.XLSX, .DOCX, .TXT) ──
-    def _importar_archivo_dialogo(self, e=None):
-        ruta = ""
+    def _abrir_modal(self, dlg: ft.AlertDialog):
+        """Abre un diálogo modal asegurando compatibilidad total con Flet 0.28+."""
         try:
-            import tkinter as tk
-            from tkinter import filedialog
-            root = tk.Tk()
-            root.withdraw()
-            root.attributes("-topmost", True)
-            ruta = filedialog.askopenfilename(
-                title="Seleccionar archivo de profesores y horarios (.xlsx, .docx, .txt)",
-                filetypes=[
-                    ("Archivos soportados", "*.xlsx *.docx *.txt *.csv"),
-                    ("Excel (*.xlsx)", "*.xlsx"),
-                    ("Word (*.docx)", "*.docx"),
-                    ("Texto / CSV (*.txt, *.csv)", "*.txt *.csv"),
-                ],
-            )
-            root.destroy()
+            if hasattr(self.page, "open") and callable(self.page.open):
+                self.page.open(dlg)
+                return
         except Exception as ex:
-            self.ultimo_mensaje = f"Error al abrir selector: {ex}"
-            self._mc_refresh()
-            self.page.update()
-            return
+            print(f"[Aviso page.open]: {ex}")
 
-        if not ruta:
-            return
-        self._procesar_archivo_ruta(ruta)
-
-    def _procesar_archivo_ruta(self, ruta: str):
+        # Fallback para Flet clásico
         try:
-            clear_all_data(keep_salones=False)
-            res_imp = importar_archivo(ruta)
+            if dlg not in self.page.overlay:
+                self.page.overlay.append(dlg)
+            dlg.open = True
+            self.page.update()
+        except Exception as ex:
+            print(f"[Error al abrir modal]: {ex}")
+
+    def _cerrar_modal(self, dlg: ft.AlertDialog):
+        """Cierra un diálogo modal compatible con Flet 0.28+."""
+        try:
+            if hasattr(self.page, "close") and callable(self.page.close):
+                self.page.close(dlg)
+                return
+        except Exception as ex:
+            print(f"[Aviso page.close]: {ex}")
+
+        # Fallback
+        try:
+            dlg.open = False
+            self.page.update()
+        except Exception as ex:
+            print(f"[Error al cerrar modal]: {ex}")
+
+    def _mostrar_notificacion(self, texto: str, color=BLUE):
+        """Muestra una notificación SnackBar compatible con Flet 0.28+."""
+        sb = ft.SnackBar(ft.Text(texto, color=WHITE), bgcolor=color)
+        try:
+            if hasattr(self.page, "open") and callable(self.page.open):
+                self.page.open(sb)
+                return
+        except Exception:
+            pass
+        try:
+            self.page.snack_bar = sb
+            sb.open = True
+            self.page.update()
+        except Exception as ex:
+            print(f"[Aviso SnackBar]: {ex}")
+
+    def _on_fp_hoja_result(self, e: ft.FilePickerResultEvent):
+        if e.files and len(e.files) > 0:
+            f = e.files[0]
+            if f.path:
+                self._procesar_hoja_docente_ruta(f.path)
+
+    def _on_fp_arch_result(self, e: ft.FilePickerResultEvent):
+        if e.files and len(e.files) > 0:
+            f = e.files[0]
+            if f.path:
+                ext = os.path.splitext(f.path)[1].lower()
+                if ext in (".pdf", ".jpg", ".jpeg", ".png", ".webp", ".bmp"):
+                    self._procesar_hoja_docente_ruta(f.path)
+                else:
+                    self._procesar_archivo_ruta(f.path)
+
+    # ── ACCIÓN DE CARGA DE ARCHIVOS (.XLSX, .DOCX, .TXT, .PDF, IMÁGENES) ──
+    def _importar_archivo_dialogo(self, e=None):
+        ruta = abrir_selector_archivo_os(
+            titulo="Seleccionar archivo de planificación (.xlsx, .docx, .txt, .pdf, .jpg, .png)",
+            extensiones=[".xlsx", ".docx", ".txt", ".csv", ".pdf", ".jpg", ".jpeg", ".png", ".webp", ".bmp"]
+        )
+        if ruta:
+            ext = os.path.splitext(ruta)[1].lower()
+            if ext in (".pdf", ".jpg", ".jpeg", ".png", ".webp", ".bmp"):
+                self._procesar_hoja_docente_ruta(ruta)
+            else:
+                self._procesar_archivo_ruta(ruta)
+        elif ruta is None:
+            # Si no hay selector nativo disponible en el SO, intentar Flet FilePicker o diálogo manual
+            try:
+                self.fp_arch.pick_files(
+                    dialog_title="Seleccionar archivo de planificación",
+                    allowed_extensions=["xlsx", "docx", "txt", "csv", "pdf", "jpg", "jpeg", "png", "webp", "bmp"]
+                )
+            except Exception:
+                self._mostrar_dialogo_archivo_manual(tipo="general")
+
+    def _importar_hoja_docente_dialogo(self, e=None):
+        ruta = abrir_selector_archivo_os(
+            titulo="Seleccionar Hoja de Disponibilidad del Docente (PDF o Imagen JPEG/PNG)",
+            extensiones=[".pdf", ".jpg", ".jpeg", ".png", ".webp", ".bmp"]
+        )
+        if ruta:
+            self._procesar_hoja_docente_ruta(ruta)
+        elif ruta is None:
+            try:
+                self.fp_hoja.pick_files(
+                    dialog_title="Seleccionar Hoja de Disponibilidad",
+                    allowed_extensions=["pdf", "jpg", "jpeg", "png", "webp", "bmp"]
+                )
+            except Exception:
+                self._mostrar_dialogo_archivo_manual(tipo="hoja")
+
+    def _mostrar_dialogo_archivo_manual(self, tipo: str = "hoja"):
+        es_hoja = tipo == "hoja"
+        tit_texto = "Escanear Hoja Física de Disponibilidad" if es_hoja else "Importar Archivo de Planificación"
+        exts = (".pdf", ".jpg", ".jpeg", ".png", ".webp", ".bmp") if es_hoja else (".xlsx", ".docx", ".txt", ".csv", ".pdf", ".jpg", ".jpeg", ".png", ".webp")
+
+        tf_ruta = campo(
+            "Ruta del archivo en su computadora",
+            hint_text="/home/usuario/Descargas/archivo" + (".jpg" if es_hoja else ".xlsx"),
+            expand=True,
+        )
+
+        def cerrar(ev=None):
+            self._cerrar_modal(dlg)
+
+        def procesar(ev=None):
+            r = tf_ruta.value.strip()
+            if not r:
+                tf_ruta.error_text = "Ingrese la ruta del archivo"
+                tf_ruta.update()
+                return
+            if not os.path.isfile(r):
+                tf_ruta.error_text = "El archivo no existe en la ruta indicada"
+                tf_ruta.update()
+                return
+            self._cerrar_modal(dlg)
+            if es_hoja or os.path.splitext(r)[1].lower() in (".pdf", ".jpg", ".jpeg", ".png", ".webp", ".bmp"):
+                self._procesar_hoja_docente_ruta(r)
+            else:
+                self._procesar_archivo_ruta(r)
+
+        def explorar_os(ev=None):
+            r_sel = abrir_selector_archivo_os(
+                titulo=tit_texto,
+                extensiones=list(exts)
+            )
+            if r_sel:
+                tf_ruta.value = r_sel
+                tf_ruta.error_text = None
+                tf_ruta.update()
+
+        recientes = buscar_archivos_recientes_sistema(exts)
+        filas_recientes = []
+        if recientes:
+            filas_recientes.append(ft.Container(height=4))
+            filas_recientes.append(ft.Text("Archivos detectados en Descargas / Equipo:", size=11, color=TG, weight=ft.FontWeight.W_600))
+            for p_rec in recientes[:4]:
+                nom = os.path.basename(p_rec)
+                def aplicar_reciente(ev, p_sel=p_rec):
+                    tf_ruta.value = p_sel
+                    tf_ruta.error_text = None
+                    tf_ruta.update()
+                filas_recientes.append(
+                    ft.Container(
+                        content=ft.Row([
+                            ft.Icon(ft.Icons.INSERT_DRIVE_FILE_ROUNDED, color=BLUE, size=15),
+                            ft.Text(nom, size=11, color=TL, expand=True, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                            ft.TextButton("Usar este", style=ft.ButtonStyle(color=BLUE), on_click=aplicar_reciente),
+                        ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                        bgcolor=BG_IN, border_radius=6, padding=_ps(8, 4), margin=_mo(bottom=2),
+                    )
+                )
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            bgcolor=BG_C,
+            title=ft.Row([
+                ft.Icon(ft.Icons.DOCUMENT_SCANNER_ROUNDED if es_hoja else ft.Icons.UPLOAD_FILE_ROUNDED, color=CYAN if es_hoja else PURP, size=22),
+                ft.Text(tit_texto, size=15, weight=ft.FontWeight.BOLD, color=TW),
+            ], spacing=8),
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Text(
+                        "Seleccione el archivo con el botón de exploración o ingrese la ruta local:" if not es_hoja else
+                        "Seleccione la fotografía o PDF de la hoja de disponibilidad física para procesar con OCR:",
+                        size=12, color=TL
+                    ),
+                    ft.Container(height=6),
+                    ft.Row([
+                        tf_ruta,
+                        ft.IconButton(
+                            icon=ft.Icons.FOLDER_OPEN_ROUNDED,
+                            icon_color=WHITE,
+                            bgcolor=BLUE,
+                            tooltip="Explorar en el sistema",
+                            on_click=explorar_os,
+                        )
+                    ], spacing=6),
+                    *filas_recientes,
+                ], spacing=8, tight=True),
+                width=520,
+            ),
+            actions=[
+                ft.TextButton("Cancelar", on_click=cerrar),
+                ft.ElevatedButton("Procesar Archivo", icon=ft.Icons.PLAY_ARROW_ROUNDED, bgcolor=BLUE, color=WHITE, on_click=procesar),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self._abrir_modal(dlg)
+
+    def _procesar_hoja_docente_ruta(self, ruta: str):
+        ext = os.path.splitext(ruta)[1].lower()
+        if ext == ".pdf":
+            texto = extraer_texto_pdf(ruta)
+        else:
+            texto = extraer_texto_imagen(ruta)
+
+        if not texto.strip():
+            self.ultimo_mensaje = f"La imagen '{os.path.basename(ruta)}' presenta sombras o baja nitidez. Verifique y complete los datos del docente a continuación:"
+            datos = {
+                "docente": "",
+                "cedula": "",
+                "correo": "",
+                "carrera": "Recursos Humanos",
+                "disponibilidad": "Lunes, Martes, Miércoles (07:00 AM a 10:05 AM)",
+                "materias": ["Iniciacion Universitaria", "Administracion de Recursos Humanos"],
+            }
+            self.page.snack_bar = ft.SnackBar(
+                ft.Text(self.ultimo_mensaje, color=WHITE),
+                bgcolor=ORG
+            )
+            self.page.snack_bar.open = True
+            self._mostrar_dialogo_confirmar_hoja_docente(datos, ruta)
+            return
+
+        datos = extraer_datos_disponibilidad(texto)
+        self._mostrar_dialogo_confirmar_hoja_docente(datos, ruta)
+
+    def _mostrar_dialogo_confirmar_hoja_docente(self, datos: dict, ruta_archivo: str):
+        nom_arch = os.path.basename(ruta_archivo)
+        tf_doc = campo("Nombre y Apellidos del Docente", value=datos.get("docente", ""), expand=True)
+        tf_ced = campo("Cédula de Identidad", value=datos.get("cedula", ""), width=170)
+
+        cond_opts = [ft.dropdown.Option("Contratado/a"), ft.dropdown.Option("Ordinario/a"), ft.dropdown.Option("Otro")]
+        cond_ini = datos.get("condicion", "Contratado/a")
+        dd_cond = ddrop("Condición Docente", cond_opts, value=cond_ini, width=170)
+
+        carreras_opts = [ft.dropdown.Option(c["nombre"]) for c in CARRERAS.values()]
+        carrera_ini = datos.get("carrera", "Educacion Integral")
+        if not any(o.key == carrera_ini for o in carreras_opts):
+            carreras_opts.append(ft.dropdown.Option(carrera_ini))
+        dd_car = ddrop("Carrera Universitaria", carreras_opts, value=carrera_ini, expand=True)
+
+        amb_opts = [ft.dropdown.Option(a) for a in AMBIENTES]
+        amb_ini = datos.get("ambiente") or "P2-06"
+        if not any(o.key == amb_ini for o in amb_opts):
+            amb_opts.append(ft.dropdown.Option(amb_ini))
+        dd_amb = ddrop("Asignar Ambiente / Aula (Manual)", amb_opts, value=amb_ini, expand=True)
+        tf_custom_amb = campo("O Aula Personalizada", hint_text="Ej: P2-06, Lab-01", width=180)
+
+        tf_disp = campo(
+            "Disponibilidad para Docencia Presencial (Días y Horario)",
+            value=datos.get("disponibilidad", "Lunes, Martes y Miércoles (07:00 AM a 10:05 AM)"),
+            expand=True,
+        )
+        mats_texto = ", ".join(datos.get("materias", [])) if datos.get("materias") else "Cátedra Universitaria"
+        tf_mats = campo("Materias a Dictar (separadas por comas)", value=mats_texto, expand=True)
+
+        def cerrar(e=None):
+            self._cerrar_modal(dlg)
+
+        def confirmar(e=None):
+            doc_val = tf_doc.value.strip().upper()
+            if not doc_val:
+                tf_doc.error_text = "El nombre del docente es obligatorio"
+                tf_doc.update()
+                return
+
+            amb_elegido = tf_custom_amb.value.strip().upper() or (dd_amb.value or "").strip().upper() or "P2-06"
+            cond_val = dd_cond.value or "Contratado/a"
+            mats_lista = [m.strip() for m in tf_mats.value.split(",") if m.strip()]
+            datos_finales = {
+                "docente": doc_val,
+                "cedula": tf_ced.value.strip(),
+                "condicion": cond_val,
+                "carrera": dd_car.value or "Educacion Integral",
+                "ambiente": amb_elegido,
+                "disponibilidad": tf_disp.value.strip(),
+                "materias": mats_lista or ["Cátedra Universitaria"],
+                "correo": datos.get("correo", ""),
+            }
+
+            self._cerrar_modal(dlg)
+            res = integrar_disponibilidad_docente_bd(datos_finales)
             res_sched = generar_horarios_automaticos()
             self._all = self.motor.sincronizar_desde_sqlite()
-            if DOCENTES:
-                self.docente_calendario_sel = DOCENTES[0]
-            nom = os.path.basename(ruta)
-            self.ultimo_mensaje = (
-                f"Archivo '{nom}' importado con exito: {res_imp.get('procesados', 0)} cargas leidas y "
-                f"{len(self._all)} horarios asignados sin conflictos."
-            )
-        except Exception as ex:
-            self.ultimo_mensaje = f"Error al procesar archivo: {ex}"
+            if doc_val in DOCENTES:
+                self.docente_calendario_sel = doc_val
+            self.ultimo_mensaje = f"Hoja de '{nom_arch}' procesada: Profesor {doc_val} ({cond_val}) en aula {amb_elegido} integrado con éxito ({res.get('insertados', 0)} materias)."
+            self._sb_refresh()
+            self._nav("docentes")
+            self._mostrar_notificacion(f"Profesor {doc_val} ({cond_val}) asignado al ambiente {amb_elegido} sin conflictos.", color=GRN)
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            bgcolor=BG_C,
+            title=ft.Row([
+                ft.Icon(ft.Icons.DOCUMENT_SCANNER_ROUNDED, color=CYAN, size=24),
+                ft.Column([
+                    ft.Text("Confirmar Ficha de Disponibilidad y Asignar Ambiente", size=15, weight=ft.FontWeight.BOLD, color=TW),
+                    ft.Text(f"Documento: {nom_arch} (Lectura automática OCR / PDF)", size=11, color=TG),
+                ], spacing=2),
+            ], spacing=10),
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Text("Verifique o modifique los datos del docente y asigne el ambiente antes de integrarlo:", size=12, color=TL),
+                    ft.Container(height=6),
+                    ft.Row([tf_doc, tf_ced, dd_cond], spacing=10),
+                    dd_car,
+                    ft.Row([dd_amb, tf_custom_amb], spacing=10),
+                    tf_disp,
+                    tf_mats,
+                ], spacing=8, tight=True),
+                width=600,
+            ),
+            actions=[
+                ft.TextButton("Cancelar", on_click=cerrar),
+                ft.ElevatedButton(
+                    "Confirmar e Integrar al Sistema",
+                    icon=ft.Icons.CHECK_ROUNDED,
+                    bgcolor=BLUE,
+                    color=WHITE,
+                    on_click=confirmar,
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+
+        self._abrir_modal(dlg)
+
+    def _abrir_dialogo_ambiente(self, entry: Dict, al_actualizar=None):
+        docente = entry.get("docente", "")
+        materia = entry.get("materia", "")
+        dia = entry.get("dia", "")
+        franja = entry.get("franja", "")
+        amb_actual = entry.get("ambiente", "P1-01")
+
+        dd_amb = ddrop(
+            "Seleccionar de la lista de ambientes",
+            [ft.dropdown.Option(a) for a in AMBIENTES],
+            value=amb_actual if amb_actual in AMBIENTES else (AMBIENTES[0] if AMBIENTES else "P1-01"),
+            expand=True,
+        )
+        tf_custom_amb = campo(
+            "O escribir código de aula personalizada",
+            hint_text="Ej: P2-05, Aula 104, Lab-02, VIRTUAL-03",
+        )
+
+        def cerrar(e=None):
+            self._cerrar_modal(dlg)
+
+        def guardar(e=None):
+            nuevo = tf_custom_amb.value.strip().upper() or (dd_amb.value or "").strip().upper()
+            if not nuevo:
+                return
+            if nuevo not in AMBIENTES:
+                AMBIENTES.append(nuevo)
+            self.motor.cambiar_ambiente(entry, nuevo)
+            for itm in self._all:
+                if itm.get("docente") == docente and itm.get("materia") == materia and itm.get("dia") == dia:
+                    itm["ambiente"] = nuevo
+            actualizar_ambiente_por_docente_materia(docente, materia, dia, nuevo)
+            self._all = self.motor.sincronizar_desde_sqlite()
+            self._cerrar_modal(dlg)
+            self.ultimo_mensaje = f"Ambiente de '{materia}' ({docente}) modificado a '{nuevo}'."
+            self._sb_refresh()
+            if al_actualizar:
+                al_actualizar()
+            else:
+                self._mc_refresh()
+            self._mostrar_notificacion(f"Ambiente actualizado a '{nuevo}' para {materia}", color=GRN)
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            bgcolor=BG_C,
+            title=ft.Row([
+                ft.Icon(ft.Icons.MEETING_ROOM_ROUNDED, color=ORG, size=24),
+                ft.Text("Modificar Ambiente Asignado", size=16, weight=ft.FontWeight.BOLD, color=TW),
+            ], spacing=8),
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Container(
+                        content=ft.Column([
+                            ft.Text(f"Docente: {docente}", size=12, weight=ft.FontWeight.BOLD, color=TW),
+                            ft.Text(f"Materia: {materia}", size=12, color=BLUE, weight=ft.FontWeight.W_600),
+                            ft.Text(f"Horario: {dia} | {franja}", size=11, color=TG),
+                            ft.Row([
+                                ft.Text("Ambiente actual:", size=11, color=TG),
+                                badge(amb_actual, ORG),
+                            ], spacing=6),
+                        ], spacing=4),
+                        bgcolor=BG_IN, border_radius=8, padding=_pa(12), border=_ba(1, BOR),
+                    ),
+                    ft.Container(height=8),
+                    dd_amb,
+                    ft.Container(height=4),
+                    tf_custom_amb,
+                ], spacing=6, tight=True),
+                width=420,
+            ),
+            actions=[
+                ft.TextButton("Cancelar", on_click=cerrar),
+                ft.ElevatedButton(
+                    "Guardar Cambio de Aula",
+                    icon=ft.Icons.CHECK_ROUNDED,
+                    bgcolor=BLUE,
+                    color=WHITE,
+                    on_click=guardar,
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+
+        self._abrir_modal(dlg)
+
+    def _abrir_dialogo_ambiente_docente_completo(self, docente: str, al_actualizar=None):
+        """Permite modificar manualmente el ambiente de TODAS las materias asignadas a un docente."""
+        if not docente:
+            self._mostrar_notificacion("Por favor seleccione un docente primero.", color=ORG)
+            return
+
+        asig_doc = [x for x in self._all if x.get("docente") == docente]
+        amb_actual = asig_doc[0].get("ambiente", "P1-01") if asig_doc else "P1-01"
+
+        dd_amb = ddrop(
+            "Seleccionar nuevo ambiente para el docente",
+            [ft.dropdown.Option(a) for a in AMBIENTES],
+            value=amb_actual if amb_actual in AMBIENTES else (AMBIENTES[0] if AMBIENTES else "P1-01"),
+            expand=True,
+        )
+        tf_custom = campo("O escribir código de aula personalizada", hint_text="Ej: P2-06, Lab-01")
+
+        def cerrar(e=None):
+            self._cerrar_modal(dlg)
+
+        def guardar(e=None):
+            nuevo = tf_custom.value.strip().upper() or (dd_amb.value or "").strip().upper()
+            if not nuevo:
+                return
+            if nuevo not in AMBIENTES:
+                AMBIENTES.append(nuevo)
+            actualizar_ambiente_profesor(docente, nuevo)
+            for itm in self._all:
+                if itm.get("docente") == docente:
+                    itm["ambiente"] = nuevo
+            self._all = self.motor.sincronizar_desde_sqlite()
+            self._cerrar_modal(dlg)
+            self.ultimo_mensaje = f"Ambiente de {docente} asignado a '{nuevo}' en todas sus materias."
+            self._sb_refresh()
+            if al_actualizar:
+                al_actualizar()
+            else:
+                self._mc_refresh()
+            self._mostrar_notificacion(f"Ambiente de {docente} modificado a '{nuevo}' para todas sus clases.", color=GRN)
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            bgcolor=BG_C,
+            title=ft.Row([
+                ft.Icon(ft.Icons.MEETING_ROOM_ROUNDED, color=ORG, size=24),
+                ft.Text(f"Asignar / Modificar Ambiente del Docente", size=15, weight=ft.FontWeight.BOLD, color=TW),
+            ], spacing=8),
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Text(f"Docente: {docente}", size=13, weight=ft.FontWeight.BOLD, color=BLUE),
+                    ft.Text(f"Asignará el aula elegida a las {len(asig_doc)} materias asignadas a este profesor:", size=11, color=TG),
+                    ft.Container(height=6),
+                    dd_amb,
+                    ft.Container(height=4),
+                    tf_custom,
+                ], spacing=6, tight=True),
+                width=450,
+            ),
+            actions=[
+                ft.TextButton("Cancelar", on_click=cerrar),
+                ft.ElevatedButton("Guardar y Aplicar a Todas las Materias", icon=ft.Icons.CHECK, bgcolor=BLUE, color=WHITE, on_click=guardar),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self._abrir_modal(dlg)
+
+    def _abrir_dialogo_nuevo_ambiente(self, al_actualizar=None):
+        """Permite crear o registrar un nuevo ambiente / aula en el sistema."""
+        tf_cod = campo("Código del Ambiente / Aula", hint_text="Ej: P2-15, Lab-Física, Aula 305", expand=True)
+
+        def cerrar(e=None):
+            self._cerrar_modal(dlg)
+
+        def guardar(e=None):
+            cod_val = tf_cod.value.strip().upper()
+            if not cod_val:
+                tf_cod.error_text = "El código de aula es obligatorio"
+                tf_cod.update()
+                return
+            if cod_val not in AMBIENTES:
+                AMBIENTES.append(cod_val)
+                AMBIENTES.sort()
+            conn = get_connection()
+            cur = conn.cursor()
+            get_or_create_salon(cur, cod_val)
+            conn.commit()
+            conn.close()
+
+            self._cerrar_modal(dlg)
+            self.ultimo_mensaje = f"Nuevo ambiente '{cod_val}' creado exitosamente."
+            self._sb_refresh()
+            if al_actualizar:
+                al_actualizar()
+            else:
+                self._mc_refresh()
+            self._mostrar_notificacion(f"Ambiente '{cod_val}' registrado en el sistema.", color=GRN)
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            bgcolor=BG_C,
+            title=ft.Row([
+                ft.Icon(ft.Icons.ADD_LOCATION_ALT_ROUNDED, color=BLUE, size=24),
+                ft.Text("Registrar Nuevo Ambiente / Aula", size=16, weight=ft.FontWeight.BOLD, color=TW),
+            ], spacing=8),
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Text("Ingrese el código del nuevo salón o espacio académico:", size=12, color=TL),
+                    ft.Container(height=6),
+                    tf_cod,
+                ], spacing=6, tight=True),
+                width=400,
+            ),
+            actions=[
+                ft.TextButton("Cancelar", on_click=cerrar),
+                ft.ElevatedButton("Crear Ambiente", icon=ft.Icons.CHECK, bgcolor=BLUE, color=WHITE, on_click=guardar),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self._abrir_modal(dlg)
+
+    def _abrir_dialogo_gestionar_aula(self, amb: str, clases: List[Dict], al_actualizar=None):
+        """Muestra las clases asignadas al aula para modificar o permite asignar un docente/clase si está libre."""
+        def cerrar(e=None):
+            self._cerrar_modal(dlg)
+
+        items = []
+        if clases:
+            items.append(ft.Text(f"Clases asignadas actualmente al aula {amb}:", size=13, weight=ft.FontWeight.W_600, color=TW))
+            items.append(ft.Container(height=4))
+            for cl in clases:
+                btn_reubicar = ft.ElevatedButton(
+                    "Reasignar Aula",
+                    icon=ft.Icons.EDIT_ROUNDED,
+                    bgcolor=ORG,
+                    color=WHITE,
+                    on_click=lambda _, itm=cl: [self._cerrar_modal(dlg), self._abrir_dialogo_ambiente(itm, al_actualizar=al_actualizar)],
+                )
+                items.append(ft.Container(
+                    content=ft.Row([
+                        ft.Column([
+                            ft.Text(f"{cl.get('materia', '')}", color=TW, size=12, weight=ft.FontWeight.BOLD),
+                            ft.Text(f"Prof: {cl.get('docente', '')} | {cl.get('dia', '')} ({cl.get('franja', '')})", color=TG, size=11),
+                        ], spacing=2, expand=True),
+                        btn_reubicar,
+                    ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    bgcolor=BG_IN, border_radius=8, padding=_pa(10), border=_ba(1, BOR),
+                ))
+        else:
+            items.append(ft.Text(f"El aula {amb} se encuentra totalmente disponible.", size=13, color=GRN, weight=ft.FontWeight.W_600))
+            items.append(ft.Text("Seleccione un docente para asignarle este ambiente en todas sus clases:", size=11, color=TG))
+            docs_con_clases = sorted(list({x.get("docente") for x in self._all if x.get("docente")}))
+            dd_doc = ddrop("Seleccionar Docente a Asignar", [ft.dropdown.Option(d) for d in docs_con_clases], expand=True)
+            items.append(dd_doc)
+
+            def asignar_doc(e=None):
+                doc_sel = dd_doc.value
+                if not doc_sel:
+                    return
+                actualizar_ambiente_profesor(doc_sel, amb)
+                for itm in self._all:
+                    if itm.get("docente") == doc_sel:
+                        itm["ambiente"] = amb
+                self._all = self.motor.sincronizar_desde_sqlite()
+                self._cerrar_modal(dlg)
+                self.ultimo_mensaje = f"Docente {doc_sel} asignado exitosamente al ambiente {amb}."
+                self._sb_refresh()
+                if al_actualizar:
+                    al_actualizar()
+                else:
+                    self._mc_refresh()
+                self._mostrar_notificacion(f"{doc_sel} asignado al aula {amb}.", color=GRN)
+
+            items.append(ft.Container(height=4))
+            items.append(ft.ElevatedButton("Asignar Docente al Aula", icon=ft.Icons.CHECK, bgcolor=BLUE, color=WHITE, on_click=asignar_doc))
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            bgcolor=BG_C,
+            title=ft.Row([
+                ft.Icon(ft.Icons.MEETING_ROOM_ROUNDED, color=ORG, size=24),
+                ft.Text(f"Gestión de Ambiente: {amb}", size=16, weight=ft.FontWeight.BOLD, color=TW),
+            ], spacing=8),
+            content=ft.Container(
+                content=ft.Column(items, spacing=8, tight=True),
+                width=480,
+            ),
+            actions=[
+                ft.TextButton("Cerrar", on_click=cerrar),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self._abrir_modal(dlg)
+
+    def _dialogo_vaciar_sistema_en_blanco(self, e=None):
+        def cerrar(ev=None):
+            self._cerrar_modal(dlg)
+
+        def confirmar_vaciado(ev=None):
+            self._cerrar_modal(dlg)
+            marcar_iniciar_en_blanco(True)
+            clear_all_data(keep_salones=True)
+            self._all = []
+            self.motor.limpiar_memoria()
+            DOCENTES.clear()
+            self.docente_calendario_sel = ""
+            self.ultimo_mensaje = "Sistema reiniciado en blanco. Todos los datos han sido vaciados y está listo para nuevos registros."
+            self._sb_refresh()
+            self._mc_refresh()
+            self._mostrar_notificacion("Sistema vaciado con éxito. Modo en blanco activo.", color=BLUE)
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Row([
+                ft.Icon(ft.Icons.WARNING_ROUNDED, color=RED, size=24),
+                ft.Text("¿Vaciar sistema para iniciar en blanco?", size=16, weight=ft.FontWeight.BOLD, color=TW),
+            ], spacing=8),
+            content=ft.Text(
+                "Esta acción eliminará todos los cursos, profesores y asignaciones actuales para que pueda registrar toda la planificación académica desde cero.\n\n"
+                "Los ambientes (salones) y la estructura de carreras se mantendrán intactos listos para su uso.",
+                size=13, color=TL
+            ),
+            actions=[
+                ft.TextButton("Cancelar", on_click=cerrar),
+                ft.ElevatedButton(
+                    "Sí, Vaciar Todo",
+                    icon=ft.Icons.DELETE_SWEEP_ROUNDED,
+                    bgcolor=RED,
+                    color=WHITE,
+                    on_click=confirmar_vaciado,
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self._abrir_modal(dlg)
+
+    def _cargar_datos_demo(self, e=None):
+        marcar_iniciar_en_blanco(False)
+        self.motor, self._all = _seed_data(forzar_base=True)
+        if DOCENTES:
+            self.docente_calendario_sel = DOCENTES[0]
+        self.ultimo_mensaje = "Datos base de la Universidad Simon Rodriguez (33 cursos) cargados correctamente."
+        self._sb_refresh()
+        self._mc_refresh()
+        self.page.snack_bar = ft.SnackBar(
+            ft.Text("Datos de demostración cargados exitosamente.", color=WHITE),
+            bgcolor=BLUE
+        )
+        self.page.snack_bar.open = True
+        self.page.update()
+
+    def _toggle_theme(self, e=None):
+        if self.page.theme_mode == ft.ThemeMode.LIGHT:
+            self.page.theme_mode = ft.ThemeMode.DARK
+            _set_dark_palette()
+        else:
+            self.page.theme_mode = ft.ThemeMode.LIGHT
+            _set_light_palette()
+        self.page.bgcolor = BG_P
+        self.sb.bgcolor = BG_SB
+        self.sb.border = _br(1, BOR)
+        self.mc.bgcolor = BG_P
         self._sb_refresh()
         self._mc_refresh()
         self.page.update()
@@ -1032,28 +1919,102 @@ class App:
 
     def _sb_refresh(self):
         st = self.motor.stats()
+        es_claro = getattr(self.page, "theme_mode", ft.ThemeMode.LIGHT) == ft.ThemeMode.LIGHT
 
-        logo = ft.Container(content=ft.Column([
-            ft.Row([
+        # ── ESTADO CONTRAÍDO (SOLO MUESTRA EL LOGO UNESR) ──
+        if not self.sb_expandido:
+            logo_contraido = ft.Container(
+                content=ft.Column([
+                    ft.Container(
+                        content=obtener_logo_unesr(tamano=42, tooltip="Universidad Experimental Simón Rodríguez (UNESR)"),
+                        bgcolor=WHITE,
+                        border=_ba(1, alpha_col(BLUE, 0.4)),
+                        border_radius=10,
+                        padding=4,
+                        width=52,
+                        height=52,
+                        alignment=ft.alignment.center,
+                        shadow=ft.BoxShadow(spread_radius=1, blur_radius=3, color=alpha_col(BLUE, 0.15)),
+                    ),
+                    ft.Container(height=4),
+                    ft.Icon(ft.Icons.KEYBOARD_DOUBLE_ARROW_RIGHT_ROUNDED, color=BLUE, size=18),
+                ], spacing=2, alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                padding=_ps(6, 16),
+                alignment=ft.alignment.center,
+                tooltip="Clic en el logo para expandir menú (UNESR)",
+                on_click=self._toggle_sb,
+                ink=True,
+            )
+
+            btn_tema_col = ft.IconButton(
+                icon=ft.Icons.DARK_MODE_ROUNDED if es_claro else ft.Icons.LIGHT_MODE_ROUNDED,
+                icon_color=TL,
+                icon_size=18,
+                tooltip="Modo Oscuro" if es_claro else "Modo Claro",
+                on_click=self._toggle_theme,
+            )
+
+            self.sb_col.controls = [
+                logo_contraido,
+                ft.Container(expand=True),
                 ft.Container(
-                    content=ft.Icon(ft.Icons.AUTO_STORIES_ROUNDED, color=TW, size=22),
-                    bgcolor=BLUE, border_radius=10, padding=9, width=42, height=42,
+                    content=ft.Column([
+                        btn_tema_col,
+                    ], spacing=4, alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                    padding=_ps(6, 12),
+                    alignment=ft.alignment.center,
                 ),
-                ft.Column([
-                    ft.Text("USR", color=TW, size=15, weight=ft.FontWeight.BOLD),
-                    ft.Text("Palo Verde", color=TG, size=10),
-                ], spacing=0),
-            ], spacing=10),
-            ft.Container(height=6),
-            ft.Container(
-                content=ft.Row([
-                    ft.Icon(ft.Icons.CIRCLE, color=GRN, size=8),
-                    ft.Text("Periodo 2026-2", color=GRN, size=11),
-                ], spacing=6),
-                bgcolor=alpha_col(GRN, 0.15), border_radius=20,
-                padding=_ps(10, 5), border=_ba(1, alpha_col(GRN, 0.4)),
-            ),
-        ], spacing=10), padding=_pa(18))
+            ]
+            return
+
+        # ── ESTADO EXPANDIDO (LOGO + NOMBRE INSTITUCIONAL + TODAS LAS CATEGORÍAS) ──
+        logo_expandido = ft.Container(
+            content=obtener_logo_unesr(tamano=38, tooltip="UNESR"),
+            bgcolor=WHITE,
+            border=_ba(1, alpha_col(BLUE, 0.3)),
+            border_radius=10,
+            padding=3,
+            width=46,
+            height=46,
+            alignment=ft.alignment.center,
+            shadow=ft.BoxShadow(spread_radius=1, blur_radius=2, color=alpha_col(BLUE, 0.12)),
+            on_click=self._toggle_sb,
+            tooltip="Clic para contraer menú lateral",
+            ink=True,
+        )
+
+        btn_contraer = ft.IconButton(
+            icon=ft.Icons.KEYBOARD_DOUBLE_ARROW_LEFT_ROUNDED,
+            icon_color=TG,
+            icon_size=18,
+            tooltip="Contraer menú lateral",
+            on_click=self._toggle_sb,
+        )
+
+        header = ft.Container(
+            content=ft.Column([
+                ft.Row([
+                    logo_expandido,
+                    ft.Column([
+                        ft.Text("UNESR", color=TW, size=15, weight=ft.FontWeight.BOLD),
+                        ft.Text("Univ. Experimental", color=TG, size=10, weight=ft.FontWeight.W_600),
+                        ft.Text("Simón Rodríguez", color=TG, size=10, weight=ft.FontWeight.W_600),
+                        ft.Text("Núcleo Palo Verde", color=BLUE, size=9, weight=ft.FontWeight.W_500),
+                    ], spacing=0, expand=True),
+                    btn_contraer,
+                ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Container(height=4),
+                ft.Container(
+                    content=ft.Row([
+                        ft.Icon(ft.Icons.CIRCLE, color=GRN, size=8),
+                        ft.Text("Periodo 2026-2", color=GRN, size=11),
+                    ], spacing=6),
+                    bgcolor=alpha_col(GRN, 0.15), border_radius=20,
+                    padding=_ps(10, 4), border=_ba(1, alpha_col(GRN, 0.4)),
+                ),
+            ], spacing=6),
+            padding=_ps(14, 14),
+        )
 
         btns = []
         for vid, ico, lbl in self.NAV:
@@ -1064,8 +2025,8 @@ class App:
                     ft.Text(lbl, color=TW if act else TG, size=13,
                             weight=ft.FontWeight.W_600 if act else ft.FontWeight.W_400),
                 ], spacing=12),
-                bgcolor=alpha_col(BLUE, 0.2) if act else None,
-                border=_ba(1, alpha_col(BLUE, 0.6)) if act else None,
+                bgcolor=alpha_col(BLUE, 0.18) if act else None,
+                border=_ba(1, alpha_col(BLUE, 0.5)) if act else None,
                 border_radius=10,
                 padding=_ps(14, 10),
                 margin=_ms(10, 0),
@@ -1073,18 +2034,17 @@ class App:
                 ink=True,
             ))
 
-        # Botón directo en el Sidebar para cargar Excel / Word / TXT
-        btn_importar_sb = ft.Container(
+        btn_tema_sb = ft.Container(
             content=ft.Row([
-                ft.Icon(ft.Icons.UPLOAD_FILE_ROUNDED, color=GRN, size=17),
-                ft.Text("Importar Excel/Word/TXT", color=GRN, size=11, weight=ft.FontWeight.W_600),
-            ], spacing=8),
-            bgcolor=alpha_col(GRN, 0.15),
-            border=_ba(1, alpha_col(GRN, 0.45)),
-            border_radius=10,
-            padding=_ps(12, 9),
-            margin=_ms(10, 6),
-            on_click=self._importar_archivo_dialogo,
+                ft.Icon(ft.Icons.DARK_MODE_ROUNDED if es_claro else ft.Icons.LIGHT_MODE_ROUNDED, color=TL, size=14),
+                ft.Text("Modo Oscuro" if es_claro else "Modo Claro", color=TL, size=11, weight=ft.FontWeight.W_600),
+            ], spacing=6, alignment=ft.MainAxisAlignment.CENTER),
+            bgcolor=BG_IN,
+            border=_ba(1, BOR),
+            border_radius=8,
+            padding=_ps(8, 5),
+            margin=_ms(10, 3),
+            on_click=self._toggle_theme,
             ink=True,
         )
 
@@ -1102,19 +2062,19 @@ class App:
             divl(),
             ft.Container(content=ft.Column([
                 ft.Text("RESUMEN RAPIDO", color=TG, size=10, weight=ft.FontWeight.W_700),
-                ft.Container(height=8),
+                ft.Container(height=4),
                 mrow("Cursos activos",   str(st["cursos"]),  BLUE),
                 mrow("Ambientes en uso", f"{st['amb_uso']}/{st['amb_tot']}", ORG),
                 mrow("Conflictos",       "0",                 GRN),
                 mrow("Docentes",         str(st["docs"]),    CYAN),
-            ], spacing=6), padding=_pa(16)),
+                ft.Container(height=4),
+                btn_tema_sb,
+            ], spacing=5), padding=_pa(12)),
         ]))
 
         self.sb_col.controls = [
-            logo, divl(), ft.Container(height=8),
+            header, divl(), ft.Container(height=6),
             ft.Column(btns, spacing=3),
-            ft.Container(height=8),
-            btn_importar_sb,
             ft.Container(expand=True), bot,
         ]
 
@@ -1162,6 +2122,15 @@ class App:
             ci  = CARRERAS.get(e["carrera_id"], {})
             col = ci.get("color", BLUE)
             bg  = BG_C if i % 2 == 0 else BG_RA
+            btn_amb = ft.Container(
+                content=ft.Row([
+                    ft.Icon(ft.Icons.EDIT_ROUNDED, color=BLUE, size=11),
+                    badge(e["ambiente"], BLUE),
+                ], spacing=2, alignment=ft.MainAxisAlignment.CENTER),
+                tooltip="Modificar ambiente",
+                on_click=lambda _, itm=e: self._abrir_dialogo_ambiente(itm, al_actualizar=self._mc_refresh),
+                ink=True,
+            )
             filas.append(ft.Container(
                 content=ft.Row([
                     ft.Container(width=4, height=32, bgcolor=col, border_radius=2),
@@ -1170,11 +2139,21 @@ class App:
                     ft.Text(e["materia"][:26],          color=TL, size=11, expand=3),
                     ft.Container(ft.Text(e["dia"],                   color=TG, size=11), width=85),
                     ft.Container(ft.Text(e["franja"],                color=TG, size=11), width=120),
-                    ft.Container(badge(e["ambiente"], BLUE), width=95),
+                    ft.Container(btn_amb, width=95),
                     ft.Container(ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, color=GRN, size=15), width=35),
                 ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 bgcolor=bg, border_radius=8,
                 padding=_ps(12, 7), margin=_mo(bottom=2),
+            ))
+
+        if not self._all:
+            filas.append(ft.Container(
+                content=ft.Column([
+                    ft.Icon(ft.Icons.INBOX_ROUNDED, color=TG, size=38),
+                    ft.Text("No hay cursos registrados en el sistema.", color=TW, size=14, weight=ft.FontWeight.W_600),
+                    ft.Text("El sistema está en blanco. Utilice 'Nueva Carga', 'Cargar Excel / Word / TXT' o 'Escanear Hoja PDF / Imagen' para comenzar.", color=TG, size=12),
+                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=6),
+                padding=_pa(24), alignment=ft.alignment.center,
             ))
 
         tabla = ft.Container(
@@ -1221,19 +2200,28 @@ class App:
 
         btn_cargar_arch = ft.Container(
             content=ft.Row([
-                ft.Icon(ft.Icons.UPLOAD_FILE_ROUNDED, color=TW, size=18),
-                ft.Text("Cargar Excel / Word / TXT", color=TW, size=13, weight=ft.FontWeight.W_600)
-            ], alignment=ft.MainAxisAlignment.CENTER, spacing=8),
-            bgcolor=PURP, border_radius=10, padding=_ps(16, 12),
+                ft.Icon(ft.Icons.UPLOAD_FILE_ROUNDED, color=WHITE, size=16),
+                ft.Text("Cargar Excel/Word/TXT", color=WHITE, size=12, weight=ft.FontWeight.W_600)
+            ], alignment=ft.MainAxisAlignment.CENTER, spacing=6),
+            bgcolor=PURP, border_radius=10, padding=_ps(14, 11),
             on_click=self._importar_archivo_dialogo, ink=True,
+        )
+
+        btn_ocr_hoja = ft.Container(
+            content=ft.Row([
+                ft.Icon(ft.Icons.DOCUMENT_SCANNER_ROUNDED, color=WHITE, size=16),
+                ft.Text("Escanear Hoja PDF/Img", color=WHITE, size=12, weight=ft.FontWeight.W_600)
+            ], alignment=ft.MainAxisAlignment.CENTER, spacing=6),
+            bgcolor=CYAN, border_radius=10, padding=_ps(14, 11),
+            on_click=self._importar_hoja_docente_dialogo, ink=True,
         )
 
         btn_imprimir_rep = ft.Container(
             content=ft.Row([
-                ft.Icon(ft.Icons.PRINT_ROUNDED, color=BG_P, size=18),
-                ft.Text("Imprimir HTML / PDF", color=BG_P, size=13, weight=ft.FontWeight.W_700)
-            ], alignment=ft.MainAxisAlignment.CENTER, spacing=8),
-            bgcolor=GRN, border_radius=10, padding=_ps(16, 12),
+                ft.Icon(ft.Icons.PRINT_ROUNDED, color=WHITE, size=16),
+                ft.Text("Imprimir PDF/HTML", color=WHITE, size=12, weight=ft.FontWeight.W_700)
+            ], alignment=ft.MainAxisAlignment.CENTER, spacing=6),
+            bgcolor=GRN, border_radius=10, padding=_ps(14, 11),
             on_click=lambda _: generar_reporte_html_imprimible(self._all, tipo="completo"), ink=True,
         )
 
@@ -1241,7 +2229,7 @@ class App:
             ft.Row([
                 titulo("Dashboard", "Sistema de Gestion de Oferta Academica - UNESR (Palo Verde)"),
                 ft.Container(expand=True),
-                ft.Row([btn_cargar_arch, btn_imprimir_rep], spacing=10),
+                btn_imprimir_rep,
             ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         ]
 
@@ -1349,6 +2337,7 @@ class App:
                 "materia": dd_mat.value, "horas": int(tf_hrs.value or 2),
                 "ciclo": dd_cic.value or "INTRODUCTORIO",
                 "seccion": int(tf_sec.value or 10100), "periodo": dd_per.value or "2026-2",
+                "ambiente_fijo": (dd_amb.value or "").strip().upper(),
             }
             entrada = self.motor.registrar(datos, guardar_bd=True)
             self._all = self.motor.entradas()
@@ -1416,36 +2405,12 @@ class App:
             on_click=generar, ink=True,
         )
 
-        ruta_excel_palo_verde = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "uploads", "DOC-20261016-WA0001.xlsx"
+        dd_amb = ddrop(
+            "Ambiente Asignado (Aula - Opcional)",
+            [ft.dropdown.Option("", "Asignación Automática Sin Conflictos")] + [ft.dropdown.Option(a) for a in AMBIENTES],
+            value="",
+            expand=True,
         )
-        btn_subir_doc = ft.Container(
-            content=ft.Row([
-                ft.Icon(ft.Icons.UPLOAD_FILE_ROUNDED, color=TW, size=18),
-                ft.Text("Seleccionar Archivo (.xlsx / .docx / .txt)", color=TW, size=13, weight=ft.FontWeight.W_600),
-            ], alignment=ft.MainAxisAlignment.CENTER, spacing=8),
-            bgcolor=PURP, border_radius=10, padding=_ps(16, 13),
-            on_click=self._importar_archivo_dialogo, ink=True,
-        )
-
-        botones_rapidos = [btn_subir_doc]
-        if os.path.exists(ruta_excel_palo_verde):
-            botones_rapidos.append(ft.Container(
-                content=ft.Row([
-                    ft.Icon(ft.Icons.TABLE_VIEW_ROUNDED, color=BG_P, size=17),
-                    ft.Text("Cargar Excel Oficial Palo Verde (447 Cursos)", color=BG_P, size=12, weight=ft.FontWeight.W_700),
-                ], alignment=ft.MainAxisAlignment.CENTER, spacing=8),
-                bgcolor=GRN, border_radius=10, padding=_ps(14, 12),
-                on_click=lambda _: self._procesar_archivo_ruta(ruta_excel_palo_verde), ink=True,
-            ))
-        botones_rapidos.append(ft.Container(
-            content=ft.Row([
-                ft.Icon(ft.Icons.RESTORE_ROUNDED, color=TL, size=16),
-                ft.Text("Restaurar 33 Cursos Base del Prototipo", color=TL, size=12),
-            ], alignment=ft.MainAxisAlignment.CENTER, spacing=8),
-            bgcolor=BG_IN, border_radius=10, padding=_ps(14, 10), border=_ba(1, BOR),
-            on_click=self._restaurar_prototipo_base, ink=True,
-        ))
 
         pf = ft.Container(
             content=ft.Column([
@@ -1465,6 +2430,8 @@ class App:
                 ft.Row([dd_doc, dd_cic], spacing=12),
                 ft.Container(height=10),
                 ft.Row([dd_per, tf_hrs, tf_sec], spacing=12),
+                ft.Container(height=10),
+                ft.Row([dd_amb], spacing=12),
                 ft.Container(height=20),
                 btn_generar
             ], spacing=0),
@@ -1477,18 +2444,13 @@ class App:
                 divl(), ft.Container(height=12),
                 res,
                 ft.Container(height=18),
-                ft.Text("Carga Masiva desde Documentos (.xlsx, .docx, .txt)", color=TW, size=14, weight=ft.FontWeight.W_600),
-                ft.Text("Importa profesores, carreras, materias y disponibilidad desde archivos Excel, Word o TXT:", color=TG, size=11),
-                ft.Container(height=8),
-                ft.Column(botones_rapidos, spacing=8),
-                ft.Container(height=18),
                 ft.Text("Como funciona el motor?", color=TW, size=13, weight=ft.FontWeight.W_600),
                 ft.Container(height=10),
-                paso("1", "Recibes solo los datos esenciales del docente y la materia o un archivo (.xlsx/.docx/.txt)."),
+                paso("1", "Recibes solo los datos esenciales del docente y la materia."),
                 paso("2", "El motor verifica la disponibilidad del docente en cada franja."),
-                paso("3", "Busca un ambiente libre en esa misma franja horaria."),
-                paso("4", "Confirma que no existen superposiciones en ninguna carrera."),
-                paso("5", "Registra la asignacion en la base SQLite con todos los datos generados."),
+                paso("3", "Asigna el aula especificada o busca un ambiente libre automáticamente."),
+                paso("4", "Confirma que no existen superposiciones en ninguna carrera ni aula."),
+                paso("5", "Registra la asignacion en la base SQLite de forma permanente."),
             ], spacing=0),
             bgcolor=BG_C, border_radius=14, padding=_pa(22), border=_ba(1, BOR), expand=True,
         )
@@ -1613,6 +2575,15 @@ class App:
                 ci  = CARRERAS.get(entry.get("carrera_id", ""), {})
                 col = ci.get("color", BLUE)
                 bg  = BG_C if i % 2 == 0 else BG_RA
+                btn_amb_h = ft.Container(
+                    content=ft.Row([
+                        ft.Icon(ft.Icons.EDIT_ROUNDED, color=BLUE, size=11),
+                        badge(entry.get("ambiente", "P1-01"), BLUE),
+                    ], spacing=2, alignment=ft.MainAxisAlignment.CENTER),
+                    tooltip="Modificar ambiente asignado a esta clase",
+                    on_click=lambda _, itm=entry: self._abrir_dialogo_ambiente(itm, al_actualizar=build),
+                    ink=True,
+                )
                 filas.append(ft.Container(
                     content=ft.Row([
                         ft.Container(width=4, height=32, bgcolor=col, border_radius=2),
@@ -1622,7 +2593,7 @@ class App:
                         ft.Container(badge(entry.get("ciclo", "INTRO")[:5], PURP), width=95),
                         ft.Container(ft.Text(entry.get("dia", ""), color=TG, size=11), width=85),
                         ft.Container(ft.Text(entry.get("franja", ""), color=TG, size=11), width=120),
-                        ft.Container(badge(entry.get("ambiente", ""), BLUE), width=95),
+                        ft.Container(btn_amb_h, width=95),
                         ft.Container(ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, color=GRN, size=15), width=35),
                     ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                     bgcolor=bg, border_radius=8,
@@ -1849,9 +2820,22 @@ class App:
                                 color=ORG if en_uso else GRN, size=10, weight=ft.FontWeight.W_500,
                                 max_lines=1, overflow=ft.TextOverflow.ELLIPSIS,
                             ),
+                            ft.Container(height=4),
+                            ft.Container(
+                                content=ft.Row([
+                                    ft.Icon(ft.Icons.EDIT_ROUNDED, size=11, color=col),
+                                    ft.Text("Modificar" if en_uso else "Asignar", size=10, color=col, weight=ft.FontWeight.W_600),
+                                ], spacing=3, alignment=ft.MainAxisAlignment.CENTER),
+                                bgcolor=alpha_col(col, 0.15),
+                                border_radius=6,
+                                padding=_ps(6, 3),
+                            ),
                         ], spacing=2),
                         bgcolor=BG_IN, border_radius=10, padding=_pa(12),
                         border=_ba(1, alpha_col(col, 0.45)), width=155,
+                        on_click=lambda _, a=amb, c=clases: self._abrir_dialogo_gestionar_aula(a, c, al_actualizar=render_ambientes),
+                        ink=True,
+                        tooltip="Clic para modificar o asignar este ambiente",
                     ))
 
                 # Header de piso con estadísticas
@@ -1904,8 +2888,20 @@ class App:
             stat_card("Cap. por Aula",    str(MAX_EST),         ft.Icons.PERSON_ROUNDED,        PURP, "Estudiantes max."),
         ], spacing=14)
 
+        btn_nuevo_amb = ft.ElevatedButton(
+            "+ Nuevo Ambiente",
+            icon=ft.Icons.ADD_LOCATION_ALT_ROUNDED,
+            bgcolor=BLUE,
+            color=WHITE,
+            on_click=lambda _: self._abrir_dialogo_nuevo_ambiente(al_actualizar=render_ambientes),
+        )
+
         return ft.Column([
-            titulo("Gestion de Ambientes por Piso", f"Distribucion ordenada por plantas de los {st['amb_tot']} ambientes academicos."),
+            ft.Row([
+                titulo("Gestion de Ambientes por Piso", f"Distribucion ordenada por plantas de los {st['amb_tot']} ambientes academicos."),
+                ft.Container(expand=True),
+                btn_nuevo_amb,
+            ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             ft.Container(height=18),
             stats_ambientes,
             ft.Container(height=18),
@@ -1968,6 +2964,11 @@ class App:
                     border=_ba(1, alpha_col(col, 0.4)), expand=True,
                 )
 
+            info_docs = obtener_info_profesores_dict()
+            info_actual = info_docs.get(doc_actual.strip().upper(), {})
+            cond_doc = info_actual.get("condicion", "Contratado/a")
+            ced_doc = info_actual.get("cedula", "")
+
             cont_resumen_doc.controls = [
                 ft.Row([
                     mini_badge_info("CURSOS ASIGNADOS", f"{tot_cursos} materias activas", BLUE, ft.Icons.BOOK_ROUNDED),
@@ -1975,7 +2976,7 @@ class App:
                 ], spacing=12),
                 ft.Row([
                     mini_badge_info("AMBIENTES EN USO", ", ".join(amb_usados) if amb_usados else "Ninguno", ORG, ft.Icons.MEETING_ROOM_ROUNDED),
-                    mini_badge_info("CARRERAS ASOCIADAS", ", ".join(carreras_doc[:2]) + ("..." if len(carreras_doc) > 2 else ("Ninguna" if not carreras_doc else "")), PURP, ft.Icons.SCHOOL_ROUNDED),
+                    mini_badge_info("CONDICIÓN DOCENTE", f"{cond_doc}" + (f" ({ced_doc})" if ced_doc else ""), PURP, ft.Icons.BADGE_ROUNDED),
                 ], spacing=12),
             ]
 
@@ -2032,6 +3033,15 @@ class App:
             for entry in asig_p:
                 ci = CARRERAS.get(entry.get("carrera_id", ""), {})
                 col_car = ci.get("color", BLUE)
+                btn_amb_doc = ft.Container(
+                    content=ft.Row([
+                        ft.Icon(ft.Icons.EDIT_ROUNDED, color=ORG, size=11),
+                        badge(entry.get("ambiente", "P1-01"), ORG),
+                    ], spacing=2, alignment=ft.MainAxisAlignment.CENTER),
+                    tooltip="Modificar ambiente asignado a esta materia",
+                    on_click=lambda _, itm=entry: self._abrir_dialogo_ambiente(itm, al_actualizar=render_docente),
+                    ink=True,
+                )
                 cards_asig.append(ft.Container(
                     content=ft.Row([
                         ft.Container(width=4, height=36, bgcolor=col_car, border_radius=2),
@@ -2042,7 +3052,7 @@ class App:
                         ft.Text(f"{entry.get('horas', 2)} hrs/sem", color=TG, size=11, width=80),
                         ft.Container(badge(entry.get("dia", ""), BLUE), width=90),
                         ft.Container(ft.Text(entry.get("franja", ""), color=TW, size=11, weight=ft.FontWeight.W_600), width=110),
-                        ft.Container(badge(entry.get("ambiente", ""), ORG), width=90),
+                        ft.Container(btn_amb_doc, width=95),
                         ft.Container(badge(f"Sec {entry.get('seccion', 10100)}", PURP), width=80),
                         ft.Icon(ft.Icons.VERIFIED_ROUNDED, color=GRN, size=18),
                     ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
@@ -2104,8 +3114,8 @@ class App:
         # Botones de impresión superiores compactos
         btn_imp_este_doc = ft.Container(
             content=ft.Row([
-                ft.Icon(ft.Icons.PRINT_ROUNDED, color=BG_P, size=16),
-                ft.Text("Imprimir Horario Docente", color=BG_P, size=11, weight=ft.FontWeight.W_700),
+                ft.Icon(ft.Icons.PRINT_ROUNDED, color=WHITE, size=16),
+                ft.Text("Imprimir Horario Docente", color=WHITE, size=11, weight=ft.FontWeight.W_700),
             ], spacing=6),
             bgcolor=GRN, border_radius=8, padding=_ps(12, 9),
             on_click=lambda _: generar_reporte_html_imprimible(self._all, tipo="profesor", docente_filtro=self.docente_calendario_sel),
@@ -2114,12 +3124,27 @@ class App:
 
         btn_imp_todos = ft.Container(
             content=ft.Row([
-                ft.Icon(ft.Icons.PICTURE_AS_PDF_ROUNDED, color=TW, size=15),
-                ft.Text(f"Imprimir Todos ({len(docs_ordenados)})", color=TW, size=11, weight=ft.FontWeight.W_600),
+                ft.Icon(ft.Icons.PICTURE_AS_PDF_ROUNDED, color=WHITE, size=15),
+                ft.Text(f"Imprimir Todos ({len(docs_ordenados)})", color=WHITE, size=11, weight=ft.FontWeight.W_600),
             ], spacing=6),
             bgcolor=PURP, border_radius=8, padding=_ps(12, 9),
             on_click=lambda _: generar_reporte_html_imprimible(self._all, tipo="profesor", docente_filtro="TODOS"),
             ink=True,
+        )
+
+        def click_cambiar_amb_doc(e=None):
+            doc_sel = dd_cal_doc.value or self.docente_calendario_sel or (docs_ordenados[0] if docs_ordenados else "")
+            if not doc_sel:
+                self._mostrar_notificacion("No hay un docente seleccionado o registrado.", color=ORG)
+                return
+            self._abrir_dialogo_ambiente_docente_completo(doc_sel, al_actualizar=render_docente)
+
+        btn_cambiar_amb_doc = ft.ElevatedButton(
+            "Asignar / Cambiar Aula",
+            icon=ft.Icons.MEETING_ROOM_ROUNDED,
+            bgcolor=ORG,
+            color=WHITE,
+            on_click=click_cambiar_amb_doc,
         )
 
         barra_seleccion_docente = ft.Container(
@@ -2128,6 +3153,7 @@ class App:
                 btn_ant,
                 btn_sig,
                 badge_pos,
+                btn_cambiar_amb_doc,
             ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             bgcolor=BG_C, border_radius=12, padding=_pa(12), border=_ba(1, BOR),
         )
@@ -2535,6 +3561,10 @@ def _parchar_flet_escritorio_interactivo() -> None:
 if __name__ == "__main__":
     _parchar_flet_escritorio_interactivo()
     try:
-        ft.app(target=main)
+        assets_dir = os.path.join(BASE_DIR, "src")
+        if "--web" in sys.argv or os.environ.get("FLET_VIEW") == "web":
+            ft.app(target=main, view=ft.AppView.WEB_BROWSER, assets_dir=assets_dir)
+        else:
+            ft.app(target=main, assets_dir=assets_dir)
     except Exception as e:
         print(f"Error al iniciar Flet: {e}")
