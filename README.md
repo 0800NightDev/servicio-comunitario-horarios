@@ -43,7 +43,7 @@ Sistema interactivo de escritorio desarrollado en **Python (Flet + SQLite)** par
 El sistema está optimizado para funcionar sin fricción en cualquier entorno:
 
 ### En Windows
-* **Opción rápida:** Hacer doble clic en [`iniciar_sistema.bat`](iniciar_sistema.bat).
+* **Opción rápida:** Hacer doble clic en [`iniciar_sistema.bat`](iniciar_sistema.bat). El script crea el entorno virtual `.venv` e instala las dependencias automáticamente en la primera ejecución.
 * **Opción manual (PowerShell / CMD):**
   ```powershell
   python -m venv .venv
