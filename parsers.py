@@ -633,7 +633,7 @@ def extraer_datos_disponibilidad(texto: str) -> dict:
         "correo": "",
         "carrera": "Educacion Integral",
         "condicion": "Contratado/a",
-        "ambiente": "P2-06",
+        "ambiente": "P2-09",
         "disponibilidad": "",
         "materias": [],
         "texto_original": texto,
@@ -852,7 +852,7 @@ def integrar_disponibilidad_docente_bd(datos: dict) -> dict:
     carrera_nombre = datos.get("carrera", "Educacion Integral").strip()
     materias = datos.get("materias", [])
     disp_texto = datos.get("disponibilidad", "").strip()
-    ambiente_asignado = (datos.get("ambiente") or "P2-06").strip().upper()
+    ambiente_asignado = (datos.get("ambiente") or "P2-09").strip().upper()
 
     conn = get_connection()
     cursor = conn.cursor()

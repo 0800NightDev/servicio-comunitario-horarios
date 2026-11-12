@@ -11,9 +11,10 @@ Sistema interactivo de escritorio desarrollado en **Python (Flet + SQLite)** par
    - **Dashboard**: Estadísticas en tiempo real de cursos activos, ambientes ocupados/disponibles, docentes activos y verificación de `0 Conflictos`.
    - **Nueva Carga**: Registro individual con asignación automática o selección manual de ambiente, día y franja horaria. Importación masiva desde documentos `.xlsx`, `.docx`, `.txt`, `.csv`, `.pdf` e imágenes.
    - **Horarios (Oferta Académica General)**: Consulta filtrable por carrera, día y docente (ordenados alfabéticamente), con botón interactivo de reasignación manual de ambiente por fila y exportación a HTML/PDF imprimible.
-   - **Ambientes**: Monitoreo visual de ocupación y capacidad de cada aula y laboratorio (`P1-01` a `P4-07`, `PB`, `VIRTUAL`).
+   - **Ambientes**: Monitoreo visual de ocupación y capacidad de cada aula y laboratorio (`P1-01` a `P4-37` con numeración global consecutiva, `SATELITAL-01/02` y `VIRTUAL-01/02`). Permite registrar nuevos ambientes, modificar su capacidad, marcarlos como **ambiente de camillas** (sin capacidad numérica) y eliminarlos individualmente.
    - **Docentes (Horario Tipo Calendario + Impresión)**:
      - Visualizador interactivo del horario semanal tipo calendario (`Lunes` a `Sábado` por bloque horario) para cada docente.
+     - **Modificación y eliminación individual**: Cada docente puede editar sus datos personales (nombre, cédula, correo y condición) o eliminarse del sistema desde su tarjeta o desde la barra del docente seleccionado.
      - **Reasignación manual de ambiente**: Botón directo en cada tarjeta de materia asignada para cambiar o fijar el salón de clases sin afectar el resto de las asignaciones.
      - Generador de reportes imprimibles HTML/PDF con opción de elegir **todos los profesores registrados** o **un (1) solo profesor** de la lista.
    - **Carreras**: Panel de carreras registradas y su pensum de materias.
@@ -27,7 +28,8 @@ Sistema interactivo de escritorio desarrollado en **Python (Flet + SQLite)** par
    - Diálogo modal interactivo de verificación antes de registrar para revisar y corregir cualquier dato antes de guardarlo en la base de datos.
 
 3. **Gestión en Blanco o con Datos Demo**
-   - **Modo en Blanco**: Botón en la barra lateral para vaciar el sistema y dejar la base de datos completamente limpia y lista para registrar los datos reales del nuevo período académico.
+   - **Eliminar Datos Cargados**: Botón visible en el Dashboard y en la barra lateral que, tras una ventana de confirmación, elimina cursos, docentes, carreras y asignaciones cargadas, dejando intactos los ambientes y sus capacidades.
+   - **Modo en Blanco**: El sistema queda completamente limpio y listo para registrar los datos reales del nuevo período académico.
    - **Cargar Demo**: Botón para repoblar la base de datos con los datos de prueba y prototipo cuando sea necesario hacer demostraciones o pruebas de verificación.
    - Vistas con estados vacíos amigables cuando no hay registros aún.
 

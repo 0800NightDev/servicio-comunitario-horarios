@@ -23,6 +23,64 @@ BLOQUES_HORARIOS = [
     ("18:00", "20:00"),
 ]
 
+# Inventario oficial de ambientes por piso. La numeración de los salones es
+# global y consecutiva: P1-01..P1-08, P2-09..P2-22, P3-23..P3-27 y P4-28..P4-37.
+PISOS_SALONES = {1: 8, 2: 14, 3: 5, 4: 10}
+CAPACIDAD_DEFECTO = 45
+AMBIENTES_ESPECIALES = [
+    ("SATELITAL-01", 45, "Satelital 1"),
+    ("SATELITAL-02", 45, "Satelital 2"),
+    ("VIRTUAL-01", 100, "Campus Virtual"),
+    ("VIRTUAL-02", 100, "Campus Virtual"),
+]
+SALONES_VERSION = "2"
+
+
+def generar_codigos_pisos():
+    """Genera los pares (piso, código) con numeración global consecutiva."""
+    resultado = []
+    numero = 0
+    for piso, cantidad in PISOS_SALONES.items():
+        for _ in range(cantidad):
+            numero += 1
+            resultado.append((piso, f"P{piso}-{numero:02d}"))
+    return resultado
+
+
+def salones_predeterminados():
+    """Retorna [(codigo, capacidad, edificio), ...] con el inventario oficial."""
+    return [
+        (codigo, CAPACIDAD_DEFECTO, f"Piso {piso}")
+        for piso, codigo in generar_codigos_pisos()
+    ] + list(AMBIENTES_ESPECIALES)
+
+
+def codigos_ambientes_predeterminados():
+    return [codigo for codigo, _, _ in salones_predeterminados()]
+
+
+def _salones_antiguos_predeterminados():
+    """Códigos del inventario anterior (7 salones por piso + virtuales)."""
+    return {
+        f"P{p}-{n:02d}"
+        for p in range(1, 5)
+        for n in range(1, 8)
+    } | {"VIRTUAL-01", "VIRTUAL-02"}
+
+
+def _obtener_config(cursor, clave):
+    cursor.execute("SELECT valor FROM configuracion WHERE clave = ?", (clave,))
+    row = cursor.fetchone()
+    return row["valor"] if row else None
+
+
+def _guardar_config(cursor, clave, valor):
+    cursor.execute(
+        "INSERT INTO configuracion (clave, valor) VALUES (?, ?) "
+        "ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor",
+        (clave, str(valor)),
+    )
+
 
 def get_connection():
     conn = sqlite3.connect(DB_PATH)
@@ -30,6 +88,102 @@ def get_connection():
     conn.execute("PRAGMA foreign_keys = ON;")
     conn.execute("PRAGMA journal_mode = WAL;")
     return conn
+
+
+def _migrar_salones(cursor):
+    """Crea o actualiza el inventario de ambientes conservando la información existente."""
+    if _obtener_config(cursor, "salones_version") == SALONES_VERSION:
+        return
+
+    predeterminados = salones_predeterminados()
+    existentes = {
+        row["codigo"].upper(): dict(row)
+        for row in cursor.execute(
+            "SELECT id, codigo, capacidad, edificio FROM salones"
+        ).fetchall()
+    }
+
+    if not existentes:
+        cursor.executemany(
+            "INSERT INTO salones (codigo, capacidad, edificio) VALUES (?, ?, ?)",
+            predeterminados,
+        )
+        _guardar_config(cursor, "salones_version", SALONES_VERSION)
+        return
+
+    antiguos = _salones_antiguos_predeterminados()
+
+    # Verificar si alguno de los salones del inventario anterior está en uso.
+    cursor.execute("SELECT COUNT(*) AS total FROM asignaciones_horario")
+    hay_asignaciones = cursor.fetchone()["total"] > 0
+    cursor.execute(
+        "SELECT DISTINCT TRIM(salon_preferido) AS codigo FROM carga_academica "
+        "WHERE salon_preferido IS NOT NULL AND TRIM(salon_preferido) <> ''"
+    )
+    cargas_en_uso = {
+        row["codigo"].upper() for row in cursor.fetchall() if row["codigo"]
+    }
+    en_uso = hay_asignaciones or bool(cargas_en_uso & antiguos)
+
+    if not en_uso:
+        # Sin referencias: reemplazar el inventario viejo por el nuevo,
+        # conservando la capacidad de los códigos que se mantienen iguales.
+        cursor.executemany(
+            "DELETE FROM salones WHERE UPPER(codigo) = ?",
+            [(codigo,) for codigo in antiguos],
+        )
+        filas = []
+        for codigo, capacidad, edificio in predeterminados:
+            anterior = existentes.get(codigo)
+            filas.append(
+                (codigo, anterior["capacidad"] if anterior else capacidad, edificio)
+            )
+        cursor.executemany(
+            "INSERT OR IGNORE INTO salones (codigo, capacidad, edificio) VALUES (?, ?, ?)",
+            filas,
+        )
+    else:
+        # Con referencias: renombrar los códigos antiguos a la nueva numeración
+        # global (por posición dentro de cada piso) sin perder asignaciones y
+        # luego completar los faltantes.
+        nuevos_por_piso = {}
+        for piso, codigo in generar_codigos_pisos():
+            nuevos_por_piso.setdefault(piso, []).append(codigo)
+
+        for piso in range(1, 5):
+            nuevos = nuevos_por_piso.get(piso, [])
+            for indice, n in enumerate(range(1, 8)):
+                viejo = f"P{piso}-{n:02d}"
+                if viejo not in existentes or indice >= len(nuevos):
+                    continue
+                nuevo = nuevos[indice]
+                if viejo == nuevo or nuevo in existentes:
+                    continue
+                try:
+                    cursor.execute(
+                        "UPDATE salones SET codigo = ? WHERE UPPER(codigo) = ?",
+                        (nuevo, viejo),
+                    )
+                    cursor.execute(
+                        "UPDATE carga_academica SET salon_preferido = ? "
+                        "WHERE UPPER(TRIM(salon_preferido)) = ?",
+                        (nuevo, viejo),
+                    )
+                except sqlite3.IntegrityError:
+                    pass
+
+        existentes = {
+            row["codigo"].upper()
+            for row in cursor.execute("SELECT codigo FROM salones").fetchall()
+        }
+        for codigo, capacidad, edificio in predeterminados:
+            if codigo not in existentes:
+                cursor.execute(
+                    "INSERT INTO salones (codigo, capacidad, edificio) VALUES (?, ?, ?)",
+                    (codigo, capacidad, edificio),
+                )
+
+    _guardar_config(cursor, "salones_version", SALONES_VERSION)
 
 
 def init_db():
@@ -54,7 +208,8 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         codigo TEXT NOT NULL UNIQUE,
         capacidad INTEGER DEFAULT 40,
-        edificio TEXT DEFAULT 'Edificio Principal'
+        edificio TEXT DEFAULT 'Edificio Principal',
+        es_camillas INTEGER DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS profesores (
@@ -99,6 +254,11 @@ def init_db():
         FOREIGN KEY (materia_id) REFERENCES materias(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS configuracion (
+        clave TEXT PRIMARY KEY,
+        valor TEXT
+    );
+
     CREATE TABLE IF NOT EXISTS asignaciones_horario (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         carga_id INTEGER NOT NULL,
@@ -128,20 +288,13 @@ def init_db():
     except Exception:
         pass
 
-    # Insertar salones predeterminados de la UNESR si no hay ninguno
-    cursor.execute("SELECT COUNT(*) as total FROM salones")
-    if cursor.fetchone()["total"] == 0:
-        salones_default = [
-            (f"P{p}-{n:02d}", 45, f"Piso {p}")
-            for p in range(1, 5) for n in range(1, 8)
-        ] + [
-            ("VIRTUAL-01", 100, "Campus Virtual"),
-            ("VIRTUAL-02", 100, "Campus Virtual"),
-        ]
-        cursor.executemany(
-            "INSERT INTO salones (codigo, capacidad, edificio) VALUES (?, ?, ?)",
-            salones_default
-        )
+    try:
+        cursor.execute("ALTER TABLE salones ADD COLUMN es_camillas INTEGER DEFAULT 0")
+    except Exception:
+        pass
+
+    # Crear/migrar el inventario oficial de ambientes.
+    _migrar_salones(cursor)
 
     conn.commit()
     conn.close()
@@ -227,7 +380,7 @@ def get_or_create_materia(cursor, nombre, carrera_id, codigo="", semestre="1er S
     return cursor.lastrowid
 
 
-def get_or_create_salon(cursor, codigo, capacidad=40, edificio="Edificio Principal"):
+def get_or_create_salon(cursor, codigo, capacidad=CAPACIDAD_DEFECTO, edificio="Edificio Principal"):
     codigo = codigo.strip()
     cursor.execute("SELECT id FROM salones WHERE LOWER(codigo) = LOWER(?)", (codigo,))
     row = cursor.fetchone()
@@ -238,6 +391,238 @@ def get_or_create_salon(cursor, codigo, capacidad=40, edificio="Edificio Princip
         (codigo, capacidad, edificio)
     )
     return cursor.lastrowid
+
+
+def obtener_salones():
+    """Retorna todos los ambientes registrados con su capacidad, edificio y tipo."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, codigo, capacidad, edificio, COALESCE(es_camillas, 0) AS es_camillas "
+        "FROM salones ORDER BY id ASC"
+    )
+    salones = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return salones
+
+
+def obtener_salon(codigo):
+    """Retorna el ambiente indicado o None si no existe."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, codigo, capacidad, edificio, COALESCE(es_camillas, 0) AS es_camillas "
+        "FROM salones WHERE UPPER(codigo) = UPPER(?)",
+        (str(codigo).strip(),),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def obtener_capacidad_salon(codigo, por_defecto=CAPACIDAD_DEFECTO):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT capacidad FROM salones WHERE UPPER(codigo) = UPPER(?)",
+        (str(codigo).strip(),),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return int(row["capacidad"]) if row and row["capacidad"] is not None else por_defecto
+
+
+def actualizar_capacidad_salon(codigo, capacidad):
+    """Actualiza la capacidad de un ambiente (funciona también para los manuales)."""
+    return actualizar_datos_ambiente(codigo, capacidad=capacidad)
+
+
+def actualizar_datos_ambiente(codigo, capacidad=None, es_camillas=None, edificio=None):
+    """Actualiza capacidad, tipo de camillas y/o edificio de un ambiente."""
+    campos = []
+    valores = []
+
+    if capacidad is not None:
+        try:
+            capacidad = int(capacidad)
+        except (TypeError, ValueError):
+            return False
+        if capacidad <= 0:
+            return False
+        campos.append("capacidad = ?")
+        valores.append(capacidad)
+
+    if es_camillas is not None:
+        campos.append("es_camillas = ?")
+        valores.append(1 if es_camillas else 0)
+
+    if edificio is not None:
+        campos.append("edificio = ?")
+        valores.append(str(edificio).strip())
+
+    if not campos:
+        return False
+
+    valores.append(str(codigo).strip())
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        f"UPDATE salones SET {', '.join(campos)} WHERE UPPER(codigo) = UPPER(?)",
+        valores,
+    )
+    actualizados = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return actualizados > 0
+
+
+def eliminar_salon(codigo):
+    """Elimina un ambiente individualmente y libera las cargas que lo usaban."""
+    codigo = str(codigo).strip().upper()
+    if not codigo:
+        return False
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM salones WHERE UPPER(codigo) = UPPER(?)", (codigo,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return False
+
+    cursor.execute(
+        "UPDATE carga_academica SET salon_preferido = '' "
+        "WHERE UPPER(TRIM(salon_preferido)) = ?",
+        (codigo,),
+    )
+    cursor.execute("DELETE FROM salones WHERE id = ?", (row["id"],))
+    conn.commit()
+    conn.close()
+    return True
+
+
+def obtener_profesores():
+    """Retorna todos los docentes registrados con sus datos personales."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, nombre, COALESCE(cedula, '') AS cedula, "
+        "COALESCE(email, '') AS email, COALESCE(condicion, 'Contratado/a') AS condicion "
+        "FROM profesores ORDER BY nombre ASC"
+    )
+    profesores = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return profesores
+
+
+def actualizar_profesor(nombre_actual, nuevo_nombre, cedula="", email="", condicion="Contratado/a"):
+    """Actualiza los datos de un docente conservando sus asignaciones."""
+    nombre_actual = str(nombre_actual).strip()
+    nuevo_nombre = str(nuevo_nombre).strip()
+    if not nombre_actual or not nuevo_nombre:
+        return False
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id FROM profesores WHERE LOWER(nombre) = LOWER(?)",
+        (nombre_actual,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return False
+
+    cursor.execute(
+        "SELECT id FROM profesores WHERE LOWER(nombre) = LOWER(?) AND id <> ?",
+        (nuevo_nombre, row["id"]),
+    )
+    if cursor.fetchone():
+        conn.close()
+        return False
+
+    cursor.execute(
+        "UPDATE profesores SET nombre = ?, cedula = ?, email = ?, condicion = ? WHERE id = ?",
+        (
+            nuevo_nombre,
+            str(cedula or "").strip(),
+            str(email or "").strip(),
+            str(condicion or "Contratado/a").strip(),
+            row["id"],
+        ),
+    )
+    actualizados = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return actualizados > 0
+
+
+def eliminar_profesor(nombre):
+    """Elimina un docente y, en cascada, sus cargas, disponibilidades y asignaciones."""
+    nombre = str(nombre).strip()
+    if not nombre:
+        return False
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM profesores WHERE LOWER(nombre) = LOWER(?)", (nombre,))
+    eliminados = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return eliminados > 0
+
+
+def siguiente_numero_ambiente():
+    """Siguiente número consecutivo global de los ambientes con código P(piso)-(nro)."""
+    import re
+
+    mayor = 0
+    for salon in obtener_salones():
+        coincidencia = re.match(r"^P\d+-(\d+)$", str(salon["codigo"]).strip().upper())
+        if coincidencia:
+            mayor = max(mayor, int(coincidencia.group(1)))
+    return mayor + 1
+
+
+def siguiente_codigo_ambiente(piso):
+    """Sugiere el próximo código P(piso)-(nro) continuando el total global."""
+    try:
+        numero_piso = int(piso)
+    except (TypeError, ValueError):
+        numero_piso = 1
+    return f"P{numero_piso}-{siguiente_numero_ambiente():02d}"
+
+
+def crear_ambiente(codigo, capacidad=CAPACIDAD_DEFECTO, edificio="Ambiente Especial", es_camillas=False):
+    """Crea o actualiza un ambiente conservando la nomenclatura indicada."""
+    codigo = str(codigo).strip().upper()
+    if not codigo:
+        return None
+    try:
+        capacidad = int(capacidad)
+    except (TypeError, ValueError):
+        capacidad = CAPACIDAD_DEFECTO
+    if capacidad <= 0:
+        capacidad = CAPACIDAD_DEFECTO
+    camillas = 1 if es_camillas else 0
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM salones WHERE UPPER(codigo) = UPPER(?)", (codigo,))
+    row = cursor.fetchone()
+    if row:
+        cursor.execute(
+            "UPDATE salones SET capacidad = ?, edificio = ?, es_camillas = ? WHERE id = ?",
+            (capacidad, edificio, camillas, row["id"]),
+        )
+    else:
+        cursor.execute(
+            "INSERT INTO salones (codigo, capacidad, edificio, es_camillas) VALUES (?, ?, ?, ?)",
+            (codigo, capacidad, edificio, camillas),
+        )
+    conn.commit()
+    conn.close()
+    return codigo
 
 
 def actualizar_ambiente_por_docente_materia(profesor_nombre: str, materia_nombre: str, dia: str, nuevo_codigo_salon: str) -> bool:

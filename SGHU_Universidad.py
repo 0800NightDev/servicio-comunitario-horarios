@@ -30,6 +30,18 @@ from database import (
     get_or_create_profesor,
     get_or_create_materia,
     get_or_create_salon,
+    obtener_salones,
+    obtener_salon,
+    obtener_capacidad_salon,
+    actualizar_datos_ambiente,
+    eliminar_salon,
+    obtener_profesores,
+    actualizar_profesor,
+    eliminar_profesor,
+    siguiente_codigo_ambiente,
+    crear_ambiente,
+    codigos_ambientes_predeterminados,
+    CAPACIDAD_DEFECTO,
     actualizar_ambiente_por_docente_materia,
     actualizar_ambiente_profesor,
     obtener_info_profesores_dict,
@@ -171,8 +183,7 @@ def _set_dark_palette():
     TL    = "#B0BEC5"
     TG    = "#78909C"
 
-MAX_EST = 45
-MAX_AMB = 30
+MAX_EST = CAPACIDAD_DEFECTO
 
 DIAS    = ["LUNES","MARTES","MIERCOLES","JUEVES","VIERNES","SABADO"]
 FRANJAS = [
@@ -180,11 +191,41 @@ FRANJAS = [
     "12:30-01:50","02:10-03:30","03:40-05:00","05:00-06:20",
 ]
 
-AMBIENTES_BASE: List[str] = (
-    [f"P{p}-{n:02d}" for p in range(1,5) for n in range(1,8)]
-    + ["VIRTUAL-01","VIRTUAL-02"]
-)
+AMBIENTES_BASE: List[str] = codigos_ambientes_predeterminados()
 AMBIENTES: List[str] = list(AMBIENTES_BASE)
+MAX_AMB = len(AMBIENTES_BASE)
+
+
+def recargar_ambientes_desde_bd():
+    """Sincroniza la lista de ambientes con el inventario guardado en SQLite."""
+    global MAX_AMB
+    try:
+        codigos = [str(s["codigo"]).strip().upper() for s in obtener_salones()]
+    except Exception:
+        codigos = []
+    if not codigos:
+        codigos = list(AMBIENTES_BASE)
+    vistos = []
+    for codigo in codigos:
+        if codigo and codigo not in vistos:
+            vistos.append(codigo)
+    AMBIENTES.clear()
+    AMBIENTES.extend(vistos)
+    MAX_AMB = len(vistos)
+
+
+def recargar_docentes_desde_bd():
+    """Sincroniza la lista de docentes con los profesores guardados en SQLite."""
+    try:
+        nombres = [
+            str(p["nombre"]).strip().upper()
+            for p in obtener_profesores()
+            if str(p.get("nombre") or "").strip()
+        ]
+    except Exception:
+        nombres = []
+    DOCENTES.clear()
+    DOCENTES.extend(sorted(set(nombres)))
 
 PERIODOS = ["2026-2","2026-1","2025-2","2025-1"]
 
@@ -609,6 +650,7 @@ ROWS_SEED = [
 
 def _seed_data(forzar_base: bool = False) -> Tuple[Motor, List[Dict]]:
     init_db()
+    recargar_ambientes_desde_bd()
     m = Motor()
     if not forzar_base:
         existentes = m.sincronizar_desde_sqlite()
@@ -618,8 +660,7 @@ def _seed_data(forzar_base: bool = False) -> Tuple[Motor, List[Dict]]:
         marcar_iniciar_en_blanco(True)
         CARRERAS.clear()
         CARRERAS.update({k: dict(v) for k, v in CARRERAS_BASE.items()})
-        AMBIENTES.clear()
-        AMBIENTES.extend(AMBIENTES_BASE)
+        recargar_ambientes_desde_bd()
         DOCENTES.clear()
         return m, []
 
@@ -629,8 +670,7 @@ def _seed_data(forzar_base: bool = False) -> Tuple[Motor, List[Dict]]:
     CARRERAS.update({k: dict(v) for k, v in CARRERAS_BASE.items()})
     DOCENTES.clear()
     DOCENTES.extend(sorted(DOCENTES_BASE))
-    AMBIENTES.clear()
-    AMBIENTES.extend(AMBIENTES_BASE)
+    recargar_ambientes_desde_bd()
 
     datos = [
         {"carrera_id":r[0],"docente":r[1],"materia":r[2],"horas":r[3], "ciclo":r[4],"seccion":r[5],"periodo":"2026-2"}
@@ -972,7 +1012,7 @@ def ddrop(lbl: str, opts, **kw) -> ft.Dropdown:
 def categorizar_piso_ambiente(codigo: str) -> Tuple[str, str, int]:
     """
     Retorna (piso_categoria, codigo_normalizado, prioridad_orden)
-    Pisos: Piso 1, Piso 2, Piso 3, Piso 4, Planta Baja (PB), Virtuales, Laboratorios y Otros
+    Pisos: Piso 1, Piso 2, Piso 3, Piso 4, Satelitales, Planta Baja (PB), Virtuales, Laboratorios y Otros
     """
     c = str(codigo).strip().strip("´'`").upper()
     for prefix in ["P1.", "P2.", "P3.", "P4."]:
@@ -987,12 +1027,14 @@ def categorizar_piso_ambiente(codigo: str) -> Tuple[str, str, int]:
         return "Piso 3", c, 3
     elif c.startswith("P4-") or c.startswith("P4") or "PISO 4" in c or c.startswith("AULA 4"):
         return "Piso 4", c, 4
+    elif "SATELITAL" in c:
+        return "Satelitales", c, 5
     elif c.startswith("PB") or "PLANTA BAJA" in c:
-        return "Planta Baja (PB)", c, 5
+        return "Planta Baja (PB)", c, 6
     elif "VIRTUAL" in c or "ONLINE" in c:
-        return "Virtuales", c, 6
+        return "Virtuales", c, 7
     else:
-        return "Laboratorios y Otros", c, 7
+        return "Laboratorios y Otros", c, 8
 
 def clave_orden_ambiente(codigo: str):
     import re
@@ -1475,7 +1517,7 @@ class App:
                         "correo": "jdemoyap2@gmail.com",
                         "carrera": "Recursos Humanos",
                         "condicion": "Contratado/a",
-                        "ambiente": "P2-06",
+                        "ambiente": "P2-09",
                         "disponibilidad": "Lunes, Martes y Miércoles (07:00 AM a 10:05 AM)",
                         "materias": ["Iniciacion Universitaria", "Administracion de Recursos Humanos"],
                     }
@@ -1507,11 +1549,11 @@ class App:
         dd_car = ddrop("Carrera Universitaria", carreras_opts, value=carrera_ini, expand=True)
 
         amb_opts = [ft.dropdown.Option(a) for a in AMBIENTES]
-        amb_ini = datos.get("ambiente") or "P2-06"
+        amb_ini = datos.get("ambiente") or "P2-09"
         if not any(o.key == amb_ini for o in amb_opts):
             amb_opts.append(ft.dropdown.Option(amb_ini))
         dd_amb = ddrop("Asignar Ambiente / Aula (Manual)", amb_opts, value=amb_ini, expand=True)
-        tf_custom_amb = campo("O Aula Personalizada", hint_text="Ej: P2-06, Lab-01", width=180)
+        tf_custom_amb = campo("O Aula Personalizada", hint_text="Ej: P2-09, Lab-01", width=180)
 
         tf_disp = campo(
             "Disponibilidad para Docencia Presencial (Días y Horario)",
@@ -1531,7 +1573,7 @@ class App:
                 tf_doc.update()
                 return
 
-            amb_elegido = tf_custom_amb.value.strip().upper() or (dd_amb.value or "").strip().upper() or "P2-06"
+            amb_elegido = tf_custom_amb.value.strip().upper() or (dd_amb.value or "").strip().upper() or "P2-09"
             cond_val = dd_cond.value or "Contratado/a"
             mats_lista = [m.strip() for m in tf_mats.value.split(",") if m.strip()]
             datos_finales = {
@@ -1608,7 +1650,7 @@ class App:
         )
         tf_custom_amb = campo(
             "O escribir código de aula personalizada",
-            hint_text="Ej: P2-05, Aula 104, Lab-02, VIRTUAL-03",
+            hint_text="Ej: P2-10, Aula 104, Lab-02, VIRTUAL-03",
         )
 
         def cerrar(e=None):
@@ -1693,7 +1735,7 @@ class App:
             value=amb_actual if amb_actual in AMBIENTES else (AMBIENTES[0] if AMBIENTES else "P1-01"),
             expand=True,
         )
-        tf_custom = campo("O escribir código de aula personalizada", hint_text="Ej: P2-06, Lab-01")
+        tf_custom = campo("O escribir código de aula personalizada", hint_text="Ej: P2-09, Lab-01")
 
         def cerrar(e=None):
             self._cerrar_modal(dlg)
@@ -1745,35 +1787,131 @@ class App:
         self._abrir_modal(dlg)
 
     def _abrir_dialogo_nuevo_ambiente(self, al_actualizar=None):
-        """Permite crear o registrar un nuevo ambiente / aula en el sistema."""
-        tf_cod = campo("Código del Ambiente / Aula", hint_text="Ej: P2-15, Lab-Física, Aula 305", expand=True)
+        """Permite crear un nuevo ambiente con numeración global o un código especial."""
+        dd_piso = ddrop(
+            "Piso / Sector",
+            [
+                ft.dropdown.Option("1", "Piso 1"),
+                ft.dropdown.Option("2", "Piso 2"),
+                ft.dropdown.Option("3", "Piso 3"),
+                ft.dropdown.Option("4", "Piso 4"),
+                ft.dropdown.Option("ESP", "Otro / Especial"),
+            ],
+            value="1",
+            width=190,
+        )
+        tf_cod = campo(
+            "Código del Ambiente / Aula",
+            value=siguiente_codigo_ambiente(1),
+            hint_text="Ej: P1-38, SATELITAL-03, Lab-Física",
+            expand=True,
+        )
+        tf_cap = campo(
+            "Capacidad (estudiantes)",
+            value=str(MAX_EST),
+            keyboard_type=ft.KeyboardType.NUMBER,
+            width=190,
+        )
+        cb_camillas = ft.Checkbox(
+            label="CAMILLAS",
+            value=False,
+        )
+        lbl_ayuda = ft.Text(
+            "La numeración continúa el total global de ambientes (P(piso)-(nro)).",
+            size=11,
+            color=TG,
+            italic=True,
+        )
+        lbl_tipo = ft.Text("", size=11, color=TG, italic=True)
+
+        def cambiar_tipo(e=None):
+            es_camillas = bool(cb_camillas.value)
+            tf_cap.disabled = es_camillas
+            tf_cap.visible = not es_camillas
+            if es_camillas:
+                lbl_tipo.value = "El ambiente se mostrará como 'Camillas' y no sumará capacidad numérica."
+            else:
+                lbl_tipo.value = ""
+            try:
+                tf_cap.update()
+                lbl_tipo.update()
+            except Exception:
+                pass
+
+        cb_camillas.on_change = cambiar_tipo
+
+        def cambiar_piso(e=None):
+            piso = dd_piso.value or "1"
+            if piso != "ESP":
+                tf_cod.value = siguiente_codigo_ambiente(piso)
+                tf_cod.disabled = False
+                lbl_ayuda.value = f"Siguiente código sugerido para el Piso {piso}: {tf_cod.value}"
+            else:
+                tf_cod.value = ""
+                tf_cod.disabled = False
+                lbl_ayuda.value = "Escriba un nombre o código especial para el ambiente."
+            try:
+                tf_cod.update()
+                lbl_ayuda.update()
+            except Exception:
+                pass
+
+        dd_piso.on_change = cambiar_piso
 
         def cerrar(e=None):
             self._cerrar_modal(dlg)
 
         def guardar(e=None):
-            cod_val = tf_cod.value.strip().upper()
+            cod_val = (tf_cod.value or "").strip().upper()
             if not cod_val:
-                tf_cod.error_text = "El código de aula es obligatorio"
+                tf_cod.error_text = "El código de ambiente es obligatorio"
                 tf_cod.update()
                 return
-            if cod_val not in AMBIENTES:
-                AMBIENTES.append(cod_val)
-                AMBIENTES.sort()
-            conn = get_connection()
-            cur = conn.cursor()
-            get_or_create_salon(cur, cod_val)
-            conn.commit()
-            conn.close()
+
+            piso = dd_piso.value or "ESP"
+            if piso != "ESP":
+                prefijo = f"P{piso}-"
+                if not cod_val.startswith(prefijo) or not cod_val[len(prefijo):].isdigit():
+                    tf_cod.error_text = f"Use la nomenclatura {prefijo}(número), ej: {siguiente_codigo_ambiente(piso)}"
+                    tf_cod.update()
+                    return
+
+            existentes = {str(s["codigo"]).strip().upper() for s in obtener_salones()}
+            if cod_val in existentes:
+                tf_cod.error_text = "Ese ambiente ya existe en el sistema"
+                tf_cod.update()
+                return
+
+            es_camillas = bool(cb_camillas.value)
+            if es_camillas:
+                capacidad = MAX_EST
+            else:
+                try:
+                    capacidad = int(tf_cap.value or MAX_EST)
+                except (TypeError, ValueError):
+                    capacidad = MAX_EST
+                if capacidad <= 0:
+                    tf_cap.error_text = "La capacidad debe ser mayor que cero"
+                    tf_cap.update()
+                    return
+
+            edificio = f"Piso {piso}" if piso != "ESP" else "Ambiente Especial"
+            crear_ambiente(cod_val, capacidad, edificio, es_camillas=es_camillas)
+            recargar_ambientes_desde_bd()
 
             self._cerrar_modal(dlg)
-            self.ultimo_mensaje = f"Nuevo ambiente '{cod_val}' creado exitosamente."
+            if es_camillas:
+                self.ultimo_mensaje = f"Nuevo ambiente de camillas '{cod_val}' creado exitosamente."
+                detalle = "como ambiente de camillas"
+            else:
+                self.ultimo_mensaje = f"Nuevo ambiente '{cod_val}' creado con capacidad para {capacidad} estudiantes."
+                detalle = f"con capacidad {capacidad}"
             self._sb_refresh()
             if al_actualizar:
                 al_actualizar()
             else:
-                self._mc_refresh()
-            self._mostrar_notificacion(f"Ambiente '{cod_val}' registrado en el sistema.", color=GRN)
+                self._refrescar_vista_actual()
+            self._mostrar_notificacion(f"Ambiente '{cod_val}' registrado {detalle}.", color=GRN)
 
         dlg = ft.AlertDialog(
             modal=True,
@@ -1784,11 +1922,15 @@ class App:
             ], spacing=8),
             content=ft.Container(
                 content=ft.Column([
-                    ft.Text("Ingrese el código del nuevo salón o espacio académico:", size=12, color=TL),
+                    ft.Text("Seleccione el piso y registre la capacidad del nuevo espacio académico:", size=12, color=TL),
                     ft.Container(height=6),
+                    ft.Row([dd_piso, tf_cap], spacing=10),
+                    cb_camillas,
+                    lbl_tipo,
                     tf_cod,
-                ], spacing=6, tight=True),
-                width=400,
+                    lbl_ayuda,
+                ], spacing=8, tight=True),
+                width=480,
             ),
             actions=[
                 ft.TextButton("Cancelar", on_click=cerrar),
@@ -1804,6 +1946,118 @@ class App:
             self._cerrar_modal(dlg)
 
         items = []
+        datos_amb = obtener_salon(amb) or {}
+        cap_actual = int(datos_amb.get("capacidad") or obtener_capacidad_salon(amb, MAX_EST))
+        es_camillas_actual = bool(int(datos_amb.get("es_camillas") or 0))
+        tf_cap = campo(
+            "Capacidad del ambiente (estudiantes)",
+            value=str(cap_actual),
+            keyboard_type=ft.KeyboardType.NUMBER,
+            width=210,
+            disabled=es_camillas_actual,
+            visible=not es_camillas_actual,
+        )
+        cb_camillas = ft.Checkbox(
+            label="CAMILLAS",
+            value=es_camillas_actual,
+        )
+        lbl_tipo_camillas = ft.Text(
+            "Este ambiente se muestra como 'Camillas' y no suma capacidad numérica."
+            if es_camillas_actual else "",
+            size=11, color=TG, italic=True,
+        )
+
+        def cambiar_tipo_camillas(e=None):
+            es_camillas = bool(cb_camillas.value)
+            tf_cap.disabled = es_camillas
+            tf_cap.visible = not es_camillas
+            lbl_tipo_camillas.value = (
+                "Este ambiente se muestra como 'Camillas' y no suma capacidad numérica."
+                if es_camillas else ""
+            )
+            try:
+                tf_cap.update()
+                lbl_tipo_camillas.update()
+            except Exception:
+                pass
+
+        cb_camillas.on_change = cambiar_tipo_camillas
+
+        def guardar_datos_ambiente(e=None):
+            es_camillas = bool(cb_camillas.value)
+            if es_camillas:
+                nueva_cap = cap_actual if cap_actual > 0 else MAX_EST
+            else:
+                try:
+                    nueva_cap = int((tf_cap.value or "").strip())
+                except (TypeError, ValueError):
+                    tf_cap.error_text = "Ingrese un número válido"
+                    tf_cap.update()
+                    return
+                if nueva_cap <= 0:
+                    tf_cap.error_text = "La capacidad debe ser mayor que cero"
+                    tf_cap.update()
+                    return
+
+            actualizar_datos_ambiente(amb, capacidad=nueva_cap, es_camillas=es_camillas)
+            self._cerrar_modal(dlg)
+            if es_camillas:
+                self.ultimo_mensaje = f"El ambiente {amb} quedó registrado como ambiente de camillas."
+            else:
+                self.ultimo_mensaje = f"Capacidad del ambiente {amb} actualizada a {nueva_cap} estudiantes."
+            self._sb_refresh()
+            if al_actualizar:
+                al_actualizar()
+            else:
+                self._refrescar_vista_actual()
+            self._mostrar_notificacion(
+                f"{amb}: {'Camillas' if es_camillas else f'{nueva_cap} estudiantes'}.",
+                color=GRN,
+            )
+
+        def abrir_confirmacion_eliminar(e=None):
+            self._cerrar_modal(dlg)
+            self._dialogo_eliminar_ambiente(amb, clases, al_actualizar=al_actualizar)
+
+        items.append(ft.Container(
+            content=ft.Column([
+                ft.Row([
+                    ft.Icon(
+                        ft.Icons.AIRLINE_SEAT_FLAT_ROUNDED if es_camillas_actual else ft.Icons.GROUPS_ROUNDED,
+                        color=PURP, size=18,
+                    ),
+                    ft.Text(
+                        "Tipo actual: Camillas" if es_camillas_actual else f"Capacidad actual: {cap_actual} estudiantes",
+                        size=12, weight=ft.FontWeight.W_600, color=TW,
+                    ),
+                ], spacing=8),
+                cb_camillas,
+                lbl_tipo_camillas,
+                ft.Row([
+                    tf_cap,
+                    ft.ElevatedButton(
+                        "Guardar Datos",
+                        icon=ft.Icons.SAVE_ROUNDED,
+                        bgcolor=PURP,
+                        color=WHITE,
+                        on_click=guardar_datos_ambiente,
+                    ),
+                    ft.ElevatedButton(
+                        "Eliminar Ambiente",
+                        icon=ft.Icons.DELETE_FOREVER_ROUNDED,
+                        bgcolor=RED,
+                        color=WHITE,
+                        on_click=abrir_confirmacion_eliminar,
+                    ),
+                ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER, wrap=True),
+            ], spacing=8),
+            bgcolor=alpha_col(PURP, 0.08),
+            border=_ba(1, alpha_col(PURP, 0.35)),
+            border_radius=10,
+            padding=_pa(12),
+        ))
+        items.append(ft.Container(height=4))
+
         if clases:
             items.append(ft.Text(f"Clases asignadas actualmente al aula {amb}:", size=13, weight=ft.FontWeight.W_600, color=TW))
             items.append(ft.Container(height=4))
@@ -1871,6 +2125,60 @@ class App:
         )
         self._abrir_modal(dlg)
 
+    def _dialogo_eliminar_ambiente(self, amb: str, clases: List[Dict], al_actualizar=None):
+        """Confirma y elimina un ambiente individualmente."""
+        def cerrar(e=None):
+            self._cerrar_modal(dlg)
+
+        def confirmar(e=None):
+            self._cerrar_modal(dlg)
+            if not eliminar_salon(amb):
+                self._mostrar_notificacion(f"No se pudo eliminar el ambiente {amb}.", color=RED)
+                return
+            recargar_ambientes_desde_bd()
+            self.motor.limpiar_memoria()
+            self._all = self.motor.sincronizar_desde_sqlite()
+            recargar_docentes_desde_bd()
+            self.ultimo_mensaje = f"Ambiente '{amb}' eliminado del sistema."
+            self._sb_refresh()
+            if al_actualizar:
+                al_actualizar()
+            else:
+                self._refrescar_vista_actual()
+            self._mostrar_notificacion(f"Ambiente '{amb}' eliminado.", color=BLUE)
+
+        detalle_clases = (
+            f"\n\nEste ambiente tiene {len(clases)} clase(s) asignada(s). "
+            "Si continúa, esas asignaciones también serán eliminadas y los docentes quedarán sin ese espacio."
+            if clases else ""
+        )
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            bgcolor=BG_C,
+            title=ft.Row([
+                ft.Icon(ft.Icons.WARNING_ROUNDED, color=RED, size=24),
+                ft.Text(f"¿Eliminar el ambiente {amb}?", size=16, weight=ft.FontWeight.BOLD, color=TW),
+            ], spacing=8),
+            content=ft.Text(
+                "Esta acción eliminará el ambiente de forma individual y no se puede deshacer."
+                + detalle_clases,
+                size=13, color=TL,
+            ),
+            actions=[
+                ft.TextButton("Cancelar", on_click=cerrar),
+                ft.ElevatedButton(
+                    "Sí, Eliminar Ambiente",
+                    icon=ft.Icons.DELETE_FOREVER_ROUNDED,
+                    bgcolor=RED,
+                    color=WHITE,
+                    on_click=confirmar,
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self._abrir_modal(dlg)
+
     def _dialogo_vaciar_sistema_en_blanco(self, e=None):
         def cerrar(ev=None):
             self._cerrar_modal(dlg)
@@ -1882,27 +2190,33 @@ class App:
             self._all = []
             self.motor.limpiar_memoria()
             DOCENTES.clear()
+            CARRERAS.clear()
+            CARRERAS.update({k: dict(v) for k, v in CARRERAS_BASE.items()})
+            MATERIAS.clear()
+            MATERIAS.update({k: [dict(m) for m in v] for k, v in MATERIAS_BASE.items()})
+            recargar_ambientes_desde_bd()
             self.docente_calendario_sel = ""
-            self.ultimo_mensaje = "Sistema reiniciado en blanco. Todos los datos han sido vaciados y está listo para nuevos registros."
+            self.ultimo_mensaje = "Datos cargados eliminados. El sistema quedó en blanco y listo para nuevos registros."
             self._sb_refresh()
             self._mc_refresh()
-            self._mostrar_notificacion("Sistema vaciado con éxito. Modo en blanco activo.", color=BLUE)
+            self._mostrar_notificacion("Datos eliminados con éxito. El sistema quedó en blanco.", color=BLUE)
 
         dlg = ft.AlertDialog(
             modal=True,
             title=ft.Row([
                 ft.Icon(ft.Icons.WARNING_ROUNDED, color=RED, size=24),
-                ft.Text("¿Vaciar sistema para iniciar en blanco?", size=16, weight=ft.FontWeight.BOLD, color=TW),
+                ft.Text("¿Eliminar todos los datos cargados?", size=16, weight=ft.FontWeight.BOLD, color=TW),
             ], spacing=8),
             content=ft.Text(
-                "Esta acción eliminará todos los cursos, profesores y asignaciones actuales para que pueda registrar toda la planificación académica desde cero.\n\n"
-                "Los ambientes (salones) y la estructura de carreras se mantendrán intactos listos para su uso.",
+                "Esta acción eliminará todos los cursos, profesores, carreras cargadas y asignaciones actuales. "
+                "No se puede deshacer.\n\n"
+                "Los ambientes (salones), sus capacidades y la configuración del sistema se mantendrán intactos.",
                 size=13, color=TL
             ),
             actions=[
                 ft.TextButton("Cancelar", on_click=cerrar),
                 ft.ElevatedButton(
-                    "Sí, Vaciar Todo",
+                    "Sí, Eliminar Datos",
                     icon=ft.Icons.DELETE_SWEEP_ROUNDED,
                     bgcolor=RED,
                     color=WHITE,
@@ -1988,12 +2302,20 @@ class App:
                 tooltip="Modo Oscuro" if es_claro else "Modo Claro",
                 on_click=self._toggle_theme,
             )
+            btn_eliminar_col = ft.IconButton(
+                icon=ft.Icons.DELETE_SWEEP_ROUNDED,
+                icon_color=RED,
+                icon_size=18,
+                tooltip="Eliminar datos cargados",
+                on_click=self._dialogo_vaciar_sistema_en_blanco,
+            )
 
             self.sb_col.controls = [
                 logo_contraido,
                 ft.Container(expand=True),
                 ft.Container(
                     content=ft.Column([
+                        btn_eliminar_col,
                         btn_tema_col,
                     ], spacing=4, alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
                     padding=_ps(6, 12),
@@ -2083,6 +2405,21 @@ class App:
             ink=True,
         )
 
+        btn_eliminar_sb = ft.Container(
+            content=ft.Row([
+                ft.Icon(ft.Icons.DELETE_SWEEP_ROUNDED, color=RED, size=14),
+                ft.Text("Eliminar datos cargados", color=RED, size=11, weight=ft.FontWeight.W_600),
+            ], spacing=6, alignment=ft.MainAxisAlignment.CENTER),
+            bgcolor=alpha_col(RED, 0.1),
+            border=_ba(1, alpha_col(RED, 0.35)),
+            border_radius=8,
+            padding=_ps(8, 5),
+            margin=_ms(10, 3),
+            on_click=self._dialogo_vaciar_sistema_en_blanco,
+            ink=True,
+            tooltip="Elimina cursos, docentes y asignaciones cargadas",
+        )
+
         def mrow(lbl, val, col):
             return ft.Row([
                 ft.Text(lbl, color=TG, size=11, expand=True),
@@ -2103,6 +2440,7 @@ class App:
                 mrow("Conflictos",       "0",                 GRN),
                 mrow("Docentes",         str(st["docs"]),    CYAN),
                 ft.Container(height=4),
+                btn_eliminar_sb,
                 btn_tema_sb,
             ], spacing=5), padding=_pa(12)),
         ]))
@@ -2123,6 +2461,15 @@ class App:
             "carreras":    self._vc,
         }.get(self.vista, self._vd)
         self.mc_col.controls = [fn()]
+
+    def _refrescar_vista_actual(self):
+        """Recarga barra lateral y vista actual, forzando el repintado de Flet."""
+        self._sb_refresh()
+        self._mc_refresh()
+        try:
+            self.page.update()
+        except Exception:
+            pass
 
     # ══════════════════════════════════════════════════
     #  VISTA DASHBOARD
@@ -2260,10 +2607,21 @@ class App:
             on_click=lambda _: generar_reporte_html_imprimible(self._all, tipo="completo"), ink=True,
         )
 
+        btn_eliminar_datos = ft.Container(
+            content=ft.Row([
+                ft.Icon(ft.Icons.DELETE_SWEEP_ROUNDED, color=WHITE, size=16),
+                ft.Text("Eliminar Datos Cargados", color=WHITE, size=12, weight=ft.FontWeight.W_700)
+            ], alignment=ft.MainAxisAlignment.CENTER, spacing=6),
+            bgcolor=RED, border_radius=10, padding=_ps(14, 11),
+            on_click=self._dialogo_vaciar_sistema_en_blanco, ink=True,
+            tooltip="Elimina los cursos, docentes y asignaciones cargadas (pide confirmación)",
+        )
+
         controles_sup = [
             ft.Row([
                 titulo("Dashboard", "Sistema de Gestion de Oferta Academica - UNESR (Palo Verde)"),
                 ft.Container(expand=True),
+                btn_eliminar_datos,
                 btn_imprimir_rep,
             ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         ]
@@ -2839,10 +3197,24 @@ class App:
     def _va(self) -> ft.Control:
         usados = self.motor.usados()
         st     = self.motor.stats()
-
+        salones_bd = obtener_salones()
+        capacidades = {
+            str(s["codigo"]).strip().upper(): int(s.get("capacidad") or MAX_EST)
+            for s in salones_bd
+        }
+        ambientes_camillas = {
+            str(s["codigo"]).strip().upper()
+            for s in salones_bd
+            if int(s.get("es_camillas") or 0)
+        }
         # Recopilar todos los ambientes únicos
         todos_ambs = list(dict.fromkeys(AMBIENTES + [e.get("ambiente") for e in self._all if e.get("ambiente")]))
-        
+        capacidad_total = sum(
+            capacidades.get(amb, MAX_EST)
+            for amb in todos_ambs
+            if amb not in ambientes_camillas
+        )
+
         # Agrupar por piso
         ambientes_por_piso: Dict[str, List[str]] = {}
         for amb in todos_ambs:
@@ -2934,7 +3306,12 @@ class App:
                             ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
                             ft.Container(height=4),
                             ft.Text(amb, color=TW, size=13, weight=ft.FontWeight.BOLD),
-                            ft.Text(f"{len(clases)} clase(s)", color=TL, size=10),
+                            ft.Text(
+                                f"{len(clases)} clase(s) • Camillas"
+                                if amb in ambientes_camillas
+                                else f"{len(clases)} clase(s) • Cap: {capacidades.get(amb, MAX_EST)}",
+                                color=TL, size=10,
+                            ),
                             ft.Container(height=2),
                             ft.Text(
                                 clases[0].get('docente', '')[:18] if (en_uso and clases) else "Disponible",
@@ -2954,9 +3331,9 @@ class App:
                         ], spacing=2),
                         bgcolor=BG_IN, border_radius=10, padding=_pa(12),
                         border=_ba(1, alpha_col(col, 0.45)), width=155,
-                        on_click=lambda _, a=amb, c=clases: self._abrir_dialogo_gestionar_aula(a, c, al_actualizar=render_ambientes),
+                        on_click=lambda _, a=amb, c=clases: self._abrir_dialogo_gestionar_aula(a, c, al_actualizar=self._refrescar_vista_actual),
                         ink=True,
-                        tooltip="Clic para modificar o asignar este ambiente",
+                        tooltip="Clic para modificar los datos, asignar, reasignar o eliminar este ambiente",
                     ))
 
                 # Header de piso con estadísticas
@@ -3003,10 +3380,10 @@ class App:
         render_ambientes()
 
         stats_ambientes = ft.Row([
-            stat_card("Total Ambientes", str(st["amb_tot"]),   ft.Icons.MEETING_ROOM_ROUNDED, BLUE, "Capacidad total"),
+            stat_card("Total Ambientes", str(st["amb_tot"]),   ft.Icons.MEETING_ROOM_ROUNDED, BLUE, "Registrados"),
             stat_card("En Uso",           str(st["amb_uso"]),   ft.Icons.LOCK_ROUNDED,          ORG,  "Asignados"),
             stat_card("Disponibles",      str(st["amb_lib"]),   ft.Icons.CHECK_ROUNDED,         GRN,  "Libres"),
-            stat_card("Cap. por Aula",    str(MAX_EST),         ft.Icons.PERSON_ROUNDED,        PURP, "Estudiantes max."),
+            stat_card("Capacidad Total",  str(capacidad_total), ft.Icons.PERSON_ROUNDED,        PURP, "Estudiantes"),
         ], spacing=14)
 
         btn_nuevo_amb = ft.ElevatedButton(
@@ -3014,7 +3391,7 @@ class App:
             icon=ft.Icons.ADD_LOCATION_ALT_ROUNDED,
             bgcolor=BLUE,
             color=WHITE,
-            on_click=lambda _: self._abrir_dialogo_nuevo_ambiente(al_actualizar=render_ambientes),
+            on_click=lambda _: self._abrir_dialogo_nuevo_ambiente(al_actualizar=self._refrescar_vista_actual),
         )
 
         return ft.Column([
@@ -3268,14 +3645,53 @@ class App:
             on_click=click_cambiar_amb_doc,
         )
 
+        def docente_actual():
+            return dd_cal_doc.value or self.docente_calendario_sel or (docs_ordenados[0] if docs_ordenados else "")
+
+        def editar_docente_actual(e=None):
+            doc_sel = docente_actual()
+            if not doc_sel:
+                self._mostrar_notificacion("No hay un docente seleccionado o registrado.", color=ORG)
+                return
+            self._abrir_dialogo_editar_docente(doc_sel, al_actualizar=self._refrescar_vista_actual)
+
+        def eliminar_docente_actual(e=None):
+            doc_sel = docente_actual()
+            if not doc_sel:
+                self._mostrar_notificacion("No hay un docente seleccionado o registrado.", color=ORG)
+                return
+            total = sum(1 for x in self._all if x.get("docente") == doc_sel)
+            self._dialogo_eliminar_docente(doc_sel, total, al_actualizar=self._refrescar_vista_actual)
+
+        btn_editar_doc = ft.ElevatedButton(
+            "Modificar Datos",
+            icon=ft.Icons.MANAGE_ACCOUNTS_ROUNDED,
+            bgcolor=PURP,
+            color=WHITE,
+            on_click=editar_docente_actual,
+        )
+        btn_eliminar_doc = ft.ElevatedButton(
+            "Eliminar Docente",
+            icon=ft.Icons.DELETE_FOREVER_ROUNDED,
+            bgcolor=RED,
+            color=WHITE,
+            on_click=eliminar_docente_actual,
+        )
+
         barra_seleccion_docente = ft.Container(
-            content=ft.Row([
-                dd_cal_doc,
-                btn_ant,
-                btn_sig,
-                badge_pos,
-                btn_cambiar_amb_doc,
-            ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            content=ft.Column([
+                ft.Row([
+                    dd_cal_doc,
+                    btn_ant,
+                    btn_sig,
+                    badge_pos,
+                ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Row([
+                    btn_cambiar_amb_doc,
+                    btn_editar_doc,
+                    btn_eliminar_doc,
+                ], spacing=8, alignment=ft.MainAxisAlignment.END),
+            ], spacing=8, horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
             bgcolor=BG_C, border_radius=12, padding=_pa(12), border=_ba(1, BOR),
         )
 
@@ -3386,12 +3802,35 @@ class App:
                                 color=TG, size=9, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS,
                             ),
                         ], spacing=1, expand=True),
+                        ft.PopupMenuButton(
+                            icon=ft.Icons.MORE_VERT_ROUNDED,
+                            icon_color=TG,
+                            tooltip="Acciones del docente",
+                            items=[
+                                ft.PopupMenuItem(
+                                    text="Modificar datos",
+                                    icon=ft.Icons.EDIT_ROUNDED,
+                                    on_click=lambda ev, d=doc: self._abrir_dialogo_editar_docente(
+                                        d, al_actualizar=self._refrescar_vista_actual
+                                    ),
+                                ),
+                                ft.PopupMenuItem(
+                                    text="Eliminar docente",
+                                    icon=ft.Icons.DELETE_FOREVER_ROUNDED,
+                                    on_click=lambda ev, d=doc: self._dialogo_eliminar_docente(
+                                        d,
+                                        sum(1 for x in self._all if x.get("docente") == d),
+                                        al_actualizar=self._refrescar_vista_actual,
+                                    ),
+                                ),
+                            ],
+                        ),
                         ft.Icon(
                             ft.Icons.CHECK_CIRCLE_ROUNDED if es_seleccionado else ft.Icons.CHEVRON_RIGHT_ROUNDED,
                             color=BLUE if es_seleccionado else alpha_col(TG, 0.5),
                             size=16,
                         ),
-                    ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                     bgcolor=bg_card, border_radius=10, padding=_ps(12, 10),
                     border=_ba(1.5 if es_seleccionado else 1, col_borde),
                     expand=True, height=72,
@@ -3475,6 +3914,164 @@ class App:
             grid_docentes_col,
             ft.Container(height=10),
         ], spacing=0)
+
+    def _abrir_dialogo_editar_docente(self, docente: str, al_actualizar=None):
+        """Permite modificar los datos de un docente o eliminarlo individualmente."""
+        info = obtener_info_profesores_dict().get(str(docente).strip().upper(), {})
+        tf_nombre = campo("Nombre completo", value=docente, expand=True)
+        tf_cedula = campo("Cédula", value=info.get("cedula", ""), width=190)
+        tf_email = campo("Correo electrónico", value=info.get("email", ""), expand=True)
+        dd_cond = ddrop(
+            "Condición",
+            [
+                ft.dropdown.Option("Contratado/a"),
+                ft.dropdown.Option("Fijo/a"),
+                ft.dropdown.Option("Jubilado/a"),
+                ft.dropdown.Option("Invitado/a"),
+            ],
+            value=info.get("condicion", "Contratado/a") or "Contratado/a",
+            width=210,
+        )
+        total_clases = sum(1 for x in self._all if x.get("docente") == docente)
+
+        def cerrar(e=None):
+            self._cerrar_modal(dlg)
+
+        def guardar(e=None):
+            nombre_nuevo = (tf_nombre.value or "").strip()
+            if not nombre_nuevo:
+                tf_nombre.error_text = "El nombre del docente es obligatorio"
+                tf_nombre.update()
+                return
+
+            ok = actualizar_profesor(
+                docente,
+                nombre_nuevo.upper(),
+                cedula=(tf_cedula.value or "").strip(),
+                email=(tf_email.value or "").strip(),
+                condicion=dd_cond.value or "Contratado/a",
+            )
+            if not ok:
+                tf_nombre.error_text = "No se pudo actualizar. Verifique que el nombre no esté repetido."
+                tf_nombre.update()
+                return
+
+            self._cerrar_modal(dlg)
+            self.docente_calendario_sel = nombre_nuevo.upper()
+            self.motor.limpiar_memoria()
+            self._all = self.motor.sincronizar_desde_sqlite()
+            recargar_docentes_desde_bd()
+            if self.docente_calendario_sel not in DOCENTES:
+                self.docente_calendario_sel = DOCENTES[0] if DOCENTES else ""
+            self.ultimo_mensaje = f"Datos del docente '{nombre_nuevo.upper()}' actualizados correctamente."
+            self._sb_refresh()
+            if al_actualizar:
+                al_actualizar()
+            else:
+                self._refrescar_vista_actual()
+            self._mostrar_notificacion(f"Docente '{nombre_nuevo.upper()}' actualizado.", color=GRN)
+
+        def abrir_confirmacion_eliminar(e=None):
+            self._cerrar_modal(dlg)
+            self._dialogo_eliminar_docente(docente, total_clases, al_actualizar=al_actualizar)
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            bgcolor=BG_C,
+            title=ft.Row([
+                ft.Icon(ft.Icons.MANAGE_ACCOUNTS_ROUNDED, color=PURP, size=24),
+                ft.Text(f"Modificar Docente: {docente}", size=16, weight=ft.FontWeight.BOLD, color=TW),
+            ], spacing=8),
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Text("Edite los datos del docente o elimínelo individualmente del sistema.", size=12, color=TL),
+                    ft.Container(height=6),
+                    tf_nombre,
+                    ft.Row([tf_cedula, dd_cond], spacing=10),
+                    tf_email,
+                    ft.Container(height=4),
+                    ft.Text(
+                        f"Este docente tiene {total_clases} clase(s) registrada(s).",
+                        size=11, color=TG, italic=True,
+                    ),
+                ], spacing=8, tight=True),
+                width=520,
+            ),
+            actions=[
+                ft.TextButton("Cancelar", on_click=cerrar),
+                ft.ElevatedButton(
+                    "Eliminar Docente",
+                    icon=ft.Icons.DELETE_FOREVER_ROUNDED,
+                    bgcolor=RED,
+                    color=WHITE,
+                    on_click=abrir_confirmacion_eliminar,
+                ),
+                ft.ElevatedButton(
+                    "Guardar Cambios",
+                    icon=ft.Icons.SAVE_ROUNDED,
+                    bgcolor=PURP,
+                    color=WHITE,
+                    on_click=guardar,
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self._abrir_modal(dlg)
+
+    def _dialogo_eliminar_docente(self, docente: str, total_clases: int = 0, al_actualizar=None):
+        """Confirma y elimina un docente individualmente."""
+        def cerrar(e=None):
+            self._cerrar_modal(dlg)
+
+        def confirmar(e=None):
+            self._cerrar_modal(dlg)
+            if not eliminar_profesor(docente):
+                self._mostrar_notificacion(f"No se pudo eliminar al docente {docente}.", color=RED)
+                return
+            self.motor.limpiar_memoria()
+            self._all = self.motor.sincronizar_desde_sqlite()
+            recargar_docentes_desde_bd()
+            if self.docente_calendario_sel == docente or self.docente_calendario_sel not in DOCENTES:
+                self.docente_calendario_sel = DOCENTES[0] if DOCENTES else ""
+            self.ultimo_mensaje = f"Docente '{docente}' eliminado del sistema."
+            self._sb_refresh()
+            if al_actualizar:
+                al_actualizar()
+            else:
+                self._refrescar_vista_actual()
+            self._mostrar_notificacion(f"Docente '{docente}' eliminado.", color=BLUE)
+
+        detalle_clases = (
+            f"\n\nEste docente tiene {total_clases} clase(s) asignada(s). "
+            "Si continúa, también se eliminarán sus cargas y asignaciones de horario."
+            if total_clases else ""
+        )
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            bgcolor=BG_C,
+            title=ft.Row([
+                ft.Icon(ft.Icons.WARNING_ROUNDED, color=RED, size=24),
+                ft.Text(f"¿Eliminar al docente {docente}?", size=16, weight=ft.FontWeight.BOLD, color=TW),
+            ], spacing=8),
+            content=ft.Text(
+                "Esta acción eliminará al docente de forma individual y no se puede deshacer."
+                + detalle_clases,
+                size=13, color=TL,
+            ),
+            actions=[
+                ft.TextButton("Cancelar", on_click=cerrar),
+                ft.ElevatedButton(
+                    "Sí, Eliminar Docente",
+                    icon=ft.Icons.DELETE_FOREVER_ROUNDED,
+                    bgcolor=RED,
+                    color=WHITE,
+                    on_click=confirmar,
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self._abrir_modal(dlg)
 
     # ══════════════════════════════════════════════════
     #  VISTA CARRERAS (RESPONSIVE ROW SIMÉTRICO)
