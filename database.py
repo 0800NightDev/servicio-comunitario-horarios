@@ -1,6 +1,7 @@
 import sqlite3
 import os
 import sys
+import unicodedata
 
 
 def obtener_ruta_base():
@@ -393,6 +394,107 @@ def get_or_create_salon(cursor, codigo, capacidad=CAPACIDAD_DEFECTO, edificio="E
     return cursor.lastrowid
 
 
+def registrar_ficha_docente(datos):
+    """Registra los datos y la disponibilidad ingresados manualmente en la ficha docente."""
+    docente = str(datos.get("docente") or "").strip()
+    cedula = str(datos.get("cedula") or "").strip()
+    correo = str(datos.get("correo") or "").strip()
+    condicion = str(datos.get("condicion") or "").strip()
+    carrera = str(datos.get("carrera") or "").strip()
+    ambiente = str(datos.get("ambiente") or "").strip().upper()
+    materias = list(dict.fromkeys(
+        str(materia).strip()
+        for materia in datos.get("materias", [])
+        if str(materia).strip()
+    ))
+    disponibilidades = list(dict.fromkeys(
+        tuple(bloque) for bloque in datos.get("disponibilidades", [])
+    ))
+
+    errores = []
+    if not docente:
+        errores.append("Indique el nombre del docente.")
+    if not carrera:
+        errores.append("Seleccione la carrera del docente.")
+    if not materias:
+        errores.append("Indique al menos una materia.")
+    if not disponibilidades:
+        errores.append("Seleccione al menos una franja de disponibilidad.")
+    for bloque in disponibilidades:
+        if (
+            len(bloque) != 3
+            or bloque[0] not in DIAS_ORDEN
+            or not all(
+                isinstance(hora, str)
+                and len(hora) == 5
+                and hora[2] == ":"
+                and hora[:2].isdigit()
+                and hora[3:].isdigit()
+                and 0 <= int(hora[:2]) <= 23
+                and 0 <= int(hora[3:]) <= 59
+                for hora in bloque[1:]
+            )
+            or bloque[1] >= bloque[2]
+        ):
+            errores.append("La disponibilidad contiene una franja inválida.")
+            break
+    if errores:
+        return {"insertados": 0, "errores": errores}
+
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        facultad_id = get_or_create_facultad(cursor, "Facultad de Educacion y Ciencias")
+        carrera_id = get_or_create_carrera(cursor, carrera, facultad_id)
+        profesor_id = get_or_create_profesor(
+            cursor, docente, cedula, correo, condicion=condicion
+        )
+
+        if ambiente:
+            get_or_create_salon(cursor, ambiente)
+
+        cursor.execute("DELETE FROM disponibilidades WHERE profesor_id = ?", (profesor_id,))
+        cursor.executemany(
+            """
+            INSERT OR IGNORE INTO disponibilidades (profesor_id, dia, hora_inicio, hora_fin)
+            VALUES (?, ?, ?, ?)
+            """,
+            [(profesor_id, dia, inicio, fin) for dia, inicio, fin in disponibilidades],
+        )
+
+        for indice, materia in enumerate(materias, 1):
+            materia_id = get_or_create_materia(
+                cursor, materia, carrera_id, codigo=f"MAT-{indice:03d}"
+            )
+            cursor.execute(
+                """
+                INSERT INTO carga_academica
+                (profesor_id, materia_id, seccion, bloques_semanales, salon_preferido,
+                 dia_fijo, hora_inicio_fija, hora_fin_fija)
+                VALUES (?, ?, ?, 1, ?, '', '', '')
+                ON CONFLICT(profesor_id, materia_id, seccion) DO UPDATE SET
+                    salon_preferido = excluded.salon_preferido,
+                    bloques_semanales = excluded.bloques_semanales,
+                    dia_fijo = '',
+                    hora_inicio_fija = '',
+                    hora_fin_fija = ''
+                """,
+                (profesor_id, materia_id, f"Sec {10100 + indice}", ambiente),
+            )
+
+        conn.commit()
+        return {
+            "insertados": len(materias),
+            "docente": docente,
+            "errores": [],
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def obtener_salones():
     """Retorna todos los ambientes registrados con su capacidad, edificio y tipo."""
     conn = get_connection()
@@ -515,8 +617,136 @@ def obtener_profesores():
     return profesores
 
 
-def actualizar_profesor(nombre_actual, nuevo_nombre, cedula="", email="", condicion="Contratado/a"):
-    """Actualiza los datos de un docente conservando sus asignaciones."""
+def _normalizar_materia(nombre):
+    normalizado = unicodedata.normalize("NFD", str(nombre or "").strip().casefold())
+    sin_acentos = "".join(
+        caracter for caracter in normalizado
+        if unicodedata.category(caracter) != "Mn"
+    )
+    return " ".join(sin_acentos.split())
+
+
+def obtener_materias_profesor(nombre):
+    """Devuelve las materias actualmente asignadas al docente, sin duplicados."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT DISTINCT m.nombre
+        FROM carga_academica ca
+        JOIN profesores p ON p.id = ca.profesor_id
+        JOIN materias m ON m.id = ca.materia_id
+        WHERE LOWER(p.nombre) = LOWER(?)
+        ORDER BY m.nombre COLLATE NOCASE
+        """,
+        (str(nombre).strip(),),
+    )
+    materias = [row["nombre"] for row in cursor.fetchall()]
+    conn.close()
+    return materias
+
+
+def _actualizar_materias_profesor(cursor, profesor_id, nombres_materias):
+    solicitadas = []
+    normalizadas = set()
+    for nombre in nombres_materias:
+        nombre = str(nombre or "").strip()
+        clave = _normalizar_materia(nombre)
+        if nombre and clave and clave not in normalizadas:
+            normalizadas.add(clave)
+            solicitadas.append((nombre, clave))
+
+    cursor.execute(
+        """
+        SELECT ca.id AS carga_id, ca.materia_id, m.nombre, m.carrera_id, m.semestre
+        FROM carga_academica ca
+        JOIN materias m ON m.id = ca.materia_id
+        WHERE ca.profesor_id = ?
+        """,
+        (profesor_id,),
+    )
+    cargas_actuales = [dict(row) for row in cursor.fetchall()]
+    por_nombre_actual = {}
+    for carga in cargas_actuales:
+        por_nombre_actual.setdefault(_normalizar_materia(carga["nombre"]), []).append(carga)
+
+    carreras_actuales = list(dict.fromkeys(carga["carrera_id"] for carga in cargas_actuales))
+    ids_materias_deseadas = set()
+
+    for nombre, clave in solicitadas:
+        cargas_misma_materia = por_nombre_actual.get(clave, [])
+        if cargas_misma_materia:
+            ids_materias_deseadas.update(carga["materia_id"] for carga in cargas_misma_materia)
+            continue
+
+        cursor.execute("SELECT id, carrera_id, nombre FROM materias")
+        coincidencias = [
+            dict(row) for row in cursor.fetchall()
+            if _normalizar_materia(row["nombre"]) == clave
+        ]
+        en_carreras_actuales = [
+            materia for materia in coincidencias
+            if materia["carrera_id"] in carreras_actuales
+        ]
+        candidatas = en_carreras_actuales or coincidencias
+        if len(candidatas) > 1:
+            return f"La materia '{nombre}' existe en varias carreras; use el nombre exacto de una materia ya asignada."
+        if candidatas:
+            ids_materias_deseadas.add(candidatas[0]["id"])
+        elif carreras_actuales:
+            materia_id = get_or_create_materia(
+                cursor,
+                nombre,
+                carreras_actuales[0],
+                semestre=cargas_actuales[0].get("semestre") or "1er Semestre",
+            )
+            ids_materias_deseadas.add(materia_id)
+        else:
+            return (
+                f"No se puede agregar '{nombre}' porque el docente no tiene una carrera "
+                "asociada donde registrar la nueva materia."
+            )
+
+    cargas_a_eliminar = [
+        carga["carga_id"] for carga in cargas_actuales
+        if carga["materia_id"] not in ids_materias_deseadas
+    ]
+    if cargas_a_eliminar:
+        placeholders = ",".join("?" for _ in cargas_a_eliminar)
+        cursor.execute(
+            f"DELETE FROM asignaciones_horario WHERE carga_id IN ({placeholders})",
+            cargas_a_eliminar,
+        )
+        cursor.execute(
+            f"DELETE FROM carga_academica WHERE id IN ({placeholders})",
+            cargas_a_eliminar,
+        )
+
+    ids_actuales = {carga["materia_id"] for carga in cargas_actuales}
+    for materia_id in ids_materias_deseadas - ids_actuales:
+        cursor.execute(
+            """
+            INSERT INTO carga_academica
+            (profesor_id, materia_id, seccion, bloques_semanales, salon_preferido,
+             dia_fijo, hora_inicio_fija, hora_fin_fija)
+            VALUES (?, ?, 'Sección A', 1, '', '', '', '')
+            ON CONFLICT(profesor_id, materia_id, seccion) DO NOTHING
+            """,
+            (profesor_id, materia_id),
+        )
+
+    return None
+
+
+def actualizar_profesor(
+    nombre_actual,
+    nuevo_nombre,
+    cedula="",
+    email="",
+    condicion="Contratado/a",
+    materias=None,
+):
+    """Actualiza los datos y, opcionalmente, la lista de materias del docente."""
     nombre_actual = str(nombre_actual).strip()
     nuevo_nombre = str(nuevo_nombre).strip()
     if not nombre_actual or not nuevo_nombre:
@@ -552,6 +782,12 @@ def actualizar_profesor(nombre_actual, nuevo_nombre, cedula="", email="", condic
         ),
     )
     actualizados = cursor.rowcount
+    if materias is not None:
+        error_materias = _actualizar_materias_profesor(cursor, row["id"], materias)
+        if error_materias:
+            conn.rollback()
+            conn.close()
+            return False
     conn.commit()
     conn.close()
     return actualizados > 0
@@ -766,4 +1002,3 @@ def esta_en_modo_blanco() -> bool:
     """Verifica si el sistema tiene activa la bandera de iniciar en blanco."""
     flag = os.path.join(BASE_DIR, ".iniciar_en_blanco")
     return os.path.exists(flag)
-

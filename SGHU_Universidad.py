@@ -22,6 +22,7 @@ from typing import Dict, List, Optional, Tuple
 
 from database import (
     BASE_DIR,
+    DIAS_ORDEN,
     init_db,
     get_connection,
     clear_all_data,
@@ -29,6 +30,7 @@ from database import (
     get_or_create_carrera,
     get_or_create_profesor,
     get_or_create_materia,
+    registrar_ficha_docente,
     get_or_create_salon,
     obtener_salones,
     obtener_salon,
@@ -37,6 +39,7 @@ from database import (
     eliminar_salon,
     obtener_profesores,
     actualizar_profesor,
+    obtener_materias_profesor,
     eliminar_profesor,
     siguiente_codigo_ambiente,
     crear_ambiente,
@@ -52,11 +55,6 @@ from parsers import (
     importar_excel,
     importar_docx,
     importar_txt,
-    importar_pdf_o_imagen,
-    extraer_datos_disponibilidad,
-    extraer_texto_pdf,
-    extraer_texto_imagen,
-    integrar_disponibilidad_docente_bd,
 )
 from scheduler import generar_horarios_automaticos
 
@@ -1051,7 +1049,7 @@ def abrir_selector_archivo_os(titulo: str = "Seleccionar archivo", extensiones: 
       - None si ningún diálogo gráfico nativo pudo ejecutarse en el SO.
     """
     if extensiones is None:
-        extensiones = [".pdf", ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".xlsx", ".docx", ".txt", ".csv"]
+        extensiones = [".xlsx", ".docx", ".txt", ".csv"]
 
     # 1. En Linux: intentar Zenity (estándar en GNOME, XFCE, Canaima, Debian, Arch y Wayland)
     if shutil.which("zenity"):
@@ -1134,7 +1132,7 @@ def abrir_selector_archivo_os(titulo: str = "Seleccionar archivo", extensiones: 
 def buscar_archivos_recientes_sistema(extensiones: Optional[Tuple[str, ...]] = None) -> List[str]:
     """Busca archivos recientes en las carpetas comunes del usuario (Descargas, Escritorio, etc.)."""
     if extensiones is None:
-        extensiones = (".pdf", ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".xlsx", ".docx", ".txt")
+        extensiones = (".xlsx", ".docx", ".txt", ".csv")
     carpetas = [
         os.path.expanduser("~/Descargas"),
         os.path.expanduser("~/Downloads"),
@@ -1204,8 +1202,7 @@ class App:
         self.docentes_pag = 1
         self.docentes_rpp = 15
 
-        # FilePickers de Flet para fallback
-        self.fp_hoja = ft.FilePicker(on_result=self._on_fp_hoja_result)
+        # Selector de archivos para importación masiva de datos tabulares.
         self.fp_arch = ft.FilePicker(on_result=self._on_fp_arch_result)
 
         # Estado del menú lateral: expandido (True) o contraído (False)
@@ -1223,16 +1220,20 @@ class App:
         p.padding    = 0
         p.spacing    = 0
         try:
+            p.window.icon = "UNESR.png"
+        except Exception as ex:
+            print(f"[Aviso icono de ventana]: {ex}")
+        try:
             p.window.width      = 1360
             p.window.height     = 860
             p.window.min_width  = 960
             p.window.min_height = 650
             p.window.to_front()
-        except Exception:
-            pass
+        except Exception as ex:
+            print(f"[Aviso ventana]: {ex}")
 
     def _build(self):
-        self.page.overlay.extend([self.fp_hoja, self.fp_arch])
+        self.page.overlay.append(self.fp_arch)
         self.sb_col = ft.Column(spacing=0, expand=True)
         self.sb     = ft.Container(
             content=self.sb_col,
@@ -1318,68 +1319,30 @@ class App:
         except Exception as ex:
             print(f"[Aviso SnackBar]: {ex}")
 
-    def _on_fp_hoja_result(self, e: ft.FilePickerResultEvent):
-        if e.files and len(e.files) > 0:
-            f = e.files[0]
-            if f.path:
-                self._procesar_hoja_docente_ruta(f.path)
-
     def _on_fp_arch_result(self, e: ft.FilePickerResultEvent):
         if e.files and len(e.files) > 0:
             f = e.files[0]
             if f.path:
-                ext = os.path.splitext(f.path)[1].lower()
-                if ext in (".pdf", ".jpg", ".jpeg", ".png", ".webp", ".bmp"):
-                    self._procesar_hoja_docente_ruta(f.path)
-                else:
-                    self._procesar_archivo_ruta(f.path)
+                self._procesar_archivo_ruta(f.path)
 
-    # ── ACCIÓN DE CARGA DE ARCHIVOS (.XLSX, .DOCX, .TXT, .PDF, IMÁGENES) ──
+    # ── ACCIÓN DE CARGA DE ARCHIVOS TABULARES ──
     def _importar_archivo_dialogo(self, e=None):
-        ruta = abrir_selector_archivo_os(
-            titulo="Seleccionar archivo de planificación (.xlsx, .docx, .txt, .pdf, .jpg, .png)",
-            extensiones=[".xlsx", ".docx", ".txt", ".csv", ".pdf", ".jpg", ".jpeg", ".png", ".webp", ".bmp"]
-        )
-        if ruta:
-            ext = os.path.splitext(ruta)[1].lower()
-            if ext in (".pdf", ".jpg", ".jpeg", ".png", ".webp", ".bmp"):
-                self._procesar_hoja_docente_ruta(ruta)
-            else:
-                self._procesar_archivo_ruta(ruta)
-        elif ruta is None:
-            # Si no hay selector nativo disponible en el SO, intentar Flet FilePicker o diálogo manual
-            try:
-                self.fp_arch.pick_files(
-                    dialog_title="Seleccionar archivo de planificación",
-                    allowed_extensions=["xlsx", "docx", "txt", "csv", "pdf", "jpg", "jpeg", "png", "webp", "bmp"]
-                )
-            except Exception:
-                self._mostrar_dialogo_archivo_manual(tipo="general")
+        try:
+            self.fp_arch.pick_files(
+                dialog_title="Seleccionar archivo de planificación",
+                allowed_extensions=["xlsx", "docx", "txt", "csv"]
+            )
+        except Exception as ex:
+            print(f"[Error al abrir selector de archivos]: {ex}")
+            self._mostrar_notificacion(f"No se pudo abrir el selector de archivos: {ex}", color=RED)
 
-    def _importar_hoja_docente_dialogo(self, e=None):
-        ruta = abrir_selector_archivo_os(
-            titulo="Seleccionar Hoja de Disponibilidad del Docente (PDF o Imagen JPEG/PNG)",
-            extensiones=[".pdf", ".jpg", ".jpeg", ".png", ".webp", ".bmp"]
-        )
-        if ruta:
-            self._procesar_hoja_docente_ruta(ruta)
-        elif ruta is None:
-            try:
-                self.fp_hoja.pick_files(
-                    dialog_title="Seleccionar Hoja de Disponibilidad",
-                    allowed_extensions=["pdf", "jpg", "jpeg", "png", "webp", "bmp"]
-                )
-            except Exception:
-                self._mostrar_dialogo_archivo_manual(tipo="hoja")
-
-    def _mostrar_dialogo_archivo_manual(self, tipo: str = "hoja"):
-        es_hoja = tipo == "hoja"
-        tit_texto = "Escanear Hoja Física de Disponibilidad" if es_hoja else "Importar Archivo de Planificación"
-        exts = (".pdf", ".jpg", ".jpeg", ".png", ".webp", ".bmp") if es_hoja else (".xlsx", ".docx", ".txt", ".csv", ".pdf", ".jpg", ".jpeg", ".png", ".webp")
+    def _mostrar_dialogo_archivo_manual(self, tipo: str = "planificacion"):
+        tit_texto = "Importar Archivo de Planificación"
+        exts = (".xlsx", ".docx", ".txt", ".csv")
 
         tf_ruta = campo(
             "Ruta del archivo en su computadora",
-            hint_text="/home/usuario/Descargas/archivo" + (".jpg" if es_hoja else ".xlsx"),
+            hint_text="/home/usuario/Descargas/archivo.xlsx",
             expand=True,
         )
 
@@ -1397,10 +1360,7 @@ class App:
                 tf_ruta.update()
                 return
             self._cerrar_modal(dlg)
-            if es_hoja or os.path.splitext(r)[1].lower() in (".pdf", ".jpg", ".jpeg", ".png", ".webp", ".bmp"):
-                self._procesar_hoja_docente_ruta(r)
-            else:
-                self._procesar_archivo_ruta(r)
+            self._procesar_archivo_ruta(r)
 
         def explorar_os(ev=None):
             r_sel = abrir_selector_archivo_os(
@@ -1438,16 +1398,12 @@ class App:
             modal=True,
             bgcolor=BG_C,
             title=ft.Row([
-                ft.Icon(ft.Icons.DOCUMENT_SCANNER_ROUNDED if es_hoja else ft.Icons.UPLOAD_FILE_ROUNDED, color=CYAN if es_hoja else PURP, size=22),
+                ft.Icon(ft.Icons.UPLOAD_FILE_ROUNDED, color=PURP, size=22),
                 ft.Text(tit_texto, size=15, weight=ft.FontWeight.BOLD, color=TW),
             ], spacing=8),
             content=ft.Container(
                 content=ft.Column([
-                    ft.Text(
-                        "Seleccione el archivo con el botón de exploración o ingrese la ruta local:" if not es_hoja else
-                        "Seleccione la fotografía o PDF de la hoja de disponibilidad física para procesar con OCR:",
-                        size=12, color=TL
-                    ),
+                    ft.Text("Seleccione un archivo Excel, Word, TXT o CSV:", size=12, color=TL),
                     ft.Container(height=6),
                     ft.Row([
                         tf_ruta,
@@ -1480,15 +1436,30 @@ class App:
                 res = importar_archivo(ruta)
                 insertados = res.get("procesados", 0)
                 errores = res.get("errores", [])
-                generar_horarios_automaticos()
+                res_sched = generar_horarios_automaticos()
                 self._all = self.motor.sincronizar_desde_sqlite()
                 if DOCENTES and not self.docente_calendario_sel:
                     self.docente_calendario_sel = DOCENTES[0]
                 if insertados > 0:
-                    self.ultimo_mensaje = f"Archivo '{nom_arch}' procesado con éxito: {insertados} asignaciones registradas en el sistema."
+                    pendientes = res_sched.get("pendientes", 0)
+                    self.ultimo_mensaje = (
+                        f"Archivo '{nom_arch}' procesado: {insertados} cursos registrados; "
+                        f"{pendientes} bloques pendientes por conflictos o falta de disponibilidad."
+                    )
                     self._sb_refresh()
                     self._mc_refresh()
-                    self._mostrar_notificacion(f"Archivo '{nom_arch}' importado: {insertados} cursos registrados sin conflictos.", color=GRN)
+                    if pendientes or res_sched.get("mensajes"):
+                        detalle = res_sched.get("mensajes", [""])[0]
+                        self._mostrar_notificacion(
+                            f"Archivo '{nom_arch}' importado: {insertados} cursos; "
+                            f"{pendientes} bloques pendientes. {detalle}",
+                            color=ORG,
+                        )
+                    else:
+                        self._mostrar_notificacion(
+                            f"Archivo '{nom_arch}' importado: {insertados} cursos asignados sin conflictos.",
+                            color=GRN,
+                        )
                 else:
                     det = f" (Errores: {', '.join(errores[:2])})" if errores else ""
                     self._mostrar_notificacion(f"No se pudieron extraer cursos válidos de '{nom_arch}'{det}", color=ORG)
@@ -1496,144 +1467,6 @@ class App:
                 self._mostrar_notificacion(f"Error al procesar '{nom_arch}': {ex}", color=RED)
 
         threading.Thread(target=worker, daemon=True).start()
-
-    def _procesar_hoja_docente_ruta(self, ruta: str):
-        nom_b = os.path.basename(ruta)
-        self._mostrar_notificacion(f"Analizando '{nom_b}' con OCR... por favor espere.", color=BLUE)
-
-        def worker():
-            try:
-                ext = os.path.splitext(ruta)[1].lower()
-                if ext == ".pdf":
-                    texto = extraer_texto_pdf(ruta)
-                else:
-                    texto = extraer_texto_imagen(ruta)
-
-                if not texto.strip():
-                    self.ultimo_mensaje = f"La imagen '{nom_b}' presenta sombras o baja nitidez. Verifique y complete los datos del docente a continuación:"
-                    datos = {
-                        "docente": "DE MOYA PUERTA JORGE LUIS",
-                        "cedula": "V-15.132.154",
-                        "correo": "jdemoyap2@gmail.com",
-                        "carrera": "Recursos Humanos",
-                        "condicion": "Contratado/a",
-                        "ambiente": "P2-09",
-                        "disponibilidad": "Lunes, Martes y Miércoles (07:00 AM a 10:05 AM)",
-                        "materias": ["Iniciacion Universitaria", "Administracion de Recursos Humanos"],
-                    }
-                    self._mostrar_notificacion(f"OCR finalizado con advertencias para '{nom_b}'. Verifique y confirme los datos.", color=ORG)
-                    self._mostrar_dialogo_confirmar_hoja_docente(datos, ruta)
-                    return
-
-                datos = extraer_datos_disponibilidad(texto)
-                self._mostrar_dialogo_confirmar_hoja_docente(datos, ruta)
-            except Exception as ex:
-                print(f"[Error procesando hoja docente]: {ex}")
-                self._mostrar_notificacion(f"Error al procesar '{nom_b}': {ex}", color=RED)
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _mostrar_dialogo_confirmar_hoja_docente(self, datos: dict, ruta_archivo: str):
-        nom_arch = os.path.basename(ruta_archivo)
-        tf_doc = campo("Nombre y Apellidos del Docente", value=datos.get("docente", ""), expand=True)
-        tf_ced = campo("Cédula de Identidad", value=datos.get("cedula", ""), width=170)
-
-        cond_opts = [ft.dropdown.Option("Contratado/a"), ft.dropdown.Option("Ordinario/a"), ft.dropdown.Option("Otro")]
-        cond_ini = datos.get("condicion", "Contratado/a")
-        dd_cond = ddrop("Condición Docente", cond_opts, value=cond_ini, width=170)
-
-        carreras_opts = [ft.dropdown.Option(c["nombre"]) for c in CARRERAS.values()]
-        carrera_ini = datos.get("carrera", "Educacion Integral")
-        if not any(o.key == carrera_ini for o in carreras_opts):
-            carreras_opts.append(ft.dropdown.Option(carrera_ini))
-        dd_car = ddrop("Carrera Universitaria", carreras_opts, value=carrera_ini, expand=True)
-
-        amb_opts = [ft.dropdown.Option(a) for a in AMBIENTES]
-        amb_ini = datos.get("ambiente") or "P2-09"
-        if not any(o.key == amb_ini for o in amb_opts):
-            amb_opts.append(ft.dropdown.Option(amb_ini))
-        dd_amb = ddrop("Asignar Ambiente / Aula (Manual)", amb_opts, value=amb_ini, expand=True)
-        tf_custom_amb = campo("O Aula Personalizada", hint_text="Ej: P2-09, Lab-01", width=180)
-
-        tf_disp = campo(
-            "Disponibilidad para Docencia Presencial (Días y Horario)",
-            value=datos.get("disponibilidad", "Lunes, Martes y Miércoles (07:00 AM a 10:05 AM)"),
-            expand=True,
-        )
-        mats_texto = ", ".join(datos.get("materias", [])) if datos.get("materias") else "Cátedra Universitaria"
-        tf_mats = campo("Materias a Dictar (separadas por comas)", value=mats_texto, expand=True)
-
-        def cerrar(e=None):
-            self._cerrar_modal(dlg)
-
-        def confirmar(e=None):
-            doc_val = tf_doc.value.strip().upper()
-            if not doc_val:
-                tf_doc.error_text = "El nombre del docente es obligatorio"
-                tf_doc.update()
-                return
-
-            amb_elegido = tf_custom_amb.value.strip().upper() or (dd_amb.value or "").strip().upper() or "P2-09"
-            cond_val = dd_cond.value or "Contratado/a"
-            mats_lista = [m.strip() for m in tf_mats.value.split(",") if m.strip()]
-            datos_finales = {
-                "docente": doc_val,
-                "cedula": tf_ced.value.strip(),
-                "condicion": cond_val,
-                "carrera": dd_car.value or "Educacion Integral",
-                "ambiente": amb_elegido,
-                "disponibilidad": tf_disp.value.strip(),
-                "materias": mats_lista or ["Cátedra Universitaria"],
-                "correo": datos.get("correo", ""),
-            }
-
-            self._cerrar_modal(dlg)
-            res = integrar_disponibilidad_docente_bd(datos_finales)
-            res_sched = generar_horarios_automaticos()
-            self._all = self.motor.sincronizar_desde_sqlite()
-            if doc_val in DOCENTES:
-                self.docente_calendario_sel = doc_val
-            self.ultimo_mensaje = f"Hoja de '{nom_arch}' procesada: Profesor {doc_val} ({cond_val}) en aula {amb_elegido} integrado con éxito ({res.get('insertados', 0)} materias)."
-            self._sb_refresh()
-            self._nav("docentes")
-            self._mostrar_notificacion(f"Profesor {doc_val} ({cond_val}) asignado al ambiente {amb_elegido} sin conflictos.", color=GRN)
-
-        dlg = ft.AlertDialog(
-            modal=True,
-            bgcolor=BG_C,
-            title=ft.Row([
-                ft.Icon(ft.Icons.DOCUMENT_SCANNER_ROUNDED, color=CYAN, size=24),
-                ft.Column([
-                    ft.Text("Confirmar Ficha de Disponibilidad y Asignar Ambiente", size=15, weight=ft.FontWeight.BOLD, color=TW),
-                    ft.Text(f"Documento: {nom_arch} (Lectura automática OCR / PDF)", size=11, color=TG),
-                ], spacing=2),
-            ], spacing=10),
-            content=ft.Container(
-                content=ft.Column([
-                    ft.Text("Verifique o modifique los datos del docente y asigne el ambiente antes de integrarlo:", size=12, color=TL),
-                    ft.Container(height=6),
-                    ft.Row([tf_doc, tf_ced, dd_cond], spacing=10),
-                    dd_car,
-                    ft.Row([dd_amb, tf_custom_amb], spacing=10),
-                    tf_disp,
-                    tf_mats,
-                ], spacing=8, tight=True),
-                width=600,
-            ),
-            actions=[
-                ft.TextButton("Cancelar", on_click=cerrar),
-                ft.ElevatedButton(
-                    "Confirmar e Integrar al Sistema",
-                    icon=ft.Icons.CHECK_ROUNDED,
-                    bgcolor=BLUE,
-                    color=WHITE,
-                    on_click=confirmar,
-                ),
-            ],
-            actions_alignment=ft.MainAxisAlignment.END,
-        )
-
-        self._abrir_modal(dlg)
 
     def _abrir_dialogo_ambiente(self, entry: Dict, al_actualizar=None):
         docente = entry.get("docente", "")
@@ -2533,7 +2366,7 @@ class App:
                 content=ft.Column([
                     ft.Icon(ft.Icons.INBOX_ROUNDED, color=TG, size=38),
                     ft.Text("No hay cursos registrados en el sistema.", color=TW, size=14, weight=ft.FontWeight.W_600),
-                    ft.Text("El sistema está en blanco. Utilice 'Nueva Carga', 'Cargar Excel / Word / TXT' o 'Escanear Hoja PDF / Imagen' para comenzar.", color=TG, size=12),
+                    ft.Text("El sistema está en blanco. Utilice 'Nueva Carga' o importe una planificación Excel, Word, TXT o CSV para comenzar.", color=TG, size=12),
                 ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=6),
                 padding=_pa(24), alignment=ft.alignment.center,
             ))
@@ -2587,15 +2420,6 @@ class App:
             ], alignment=ft.MainAxisAlignment.CENTER, spacing=6),
             bgcolor=PURP, border_radius=10, padding=_ps(14, 11),
             on_click=self._importar_archivo_dialogo, ink=True,
-        )
-
-        btn_ocr_hoja = ft.Container(
-            content=ft.Row([
-                ft.Icon(ft.Icons.DOCUMENT_SCANNER_ROUNDED, color=WHITE, size=16),
-                ft.Text("Escanear Hoja PDF/Img", color=WHITE, size=12, weight=ft.FontWeight.W_600)
-            ], alignment=ft.MainAxisAlignment.CENTER, spacing=6),
-            bgcolor=CYAN, border_radius=10, padding=_ps(14, 11),
-            on_click=self._importar_hoja_docente_dialogo, ink=True,
         )
 
         btn_imprimir_rep = ft.Container(
@@ -2652,298 +2476,209 @@ class App:
     # ══════════════════════════════════════════════════
     #  VISTA NUEVA CARGA (MANUAL + ARCHIVOS .XLSX / .DOCX / .TXT)
     # ══════════════════════════════════════════════════
-    def _vnc(self) -> ft.Control:
-        dd_car = ddrop("Carrera Universitaria", [ft.dropdown.Option(k, c["nombre"]) for k, c in CARRERAS.items()], expand=1)
-        dd_mat = ddrop("Materia del Pensum", [], expand=1)
-        dd_doc = ddrop("Docente Asignado", [ft.dropdown.Option(d) for d in DOCENTES], expand=1)
-        dd_cic = ddrop("Ciclo Academico", [ft.dropdown.Option(c) for c in ["INTRODUCTORIO", "BASICO", "PROFESIONAL"]], value="INTRODUCTORIO", expand=1)
-        dd_per = ddrop("Periodo Academico", [ft.dropdown.Option(p) for p in PERIODOS], value="2026-2", expand=1)
-        tf_hrs = campo("Horas Semanales", keyboard_type=ft.KeyboardType.NUMBER, value="2", expand=1)
-        tf_sec = campo("Seccion", hint_text="Ej: 10100", keyboard_type=ft.KeyboardType.NUMBER, value="10100", expand=1)
-
-        res = ft.Container(
-            content=ft.Row([
-                ft.Icon(ft.Icons.AUTO_AWESOME_ROUNDED, color=BLUE, size=18),
-                ft.Text("El sistema asignara horario y ambiente sin conflictos de forma automatica.",
-                        color=TG, size=13, italic=True),
-            ], spacing=10),
-            bgcolor=alpha_col(BLUE, 0.12), border_radius=12,
-            padding=_pa(16), border=_ba(1, BOR),
+    def _vnc_ficha_docente(self) -> ft.Control:
+        franjas = [
+            ("07:00", "07:45"), ("07:45", "08:30"), ("08:30", "09:15"),
+            ("09:20", "10:05"), ("10:05", "10:50"), ("10:50", "11:35"),
+            ("11:35", "12:15"), ("12:30", "13:15"), ("13:15", "13:55"),
+            ("14:10", "14:55"), ("14:55", "15:35"), ("15:40", "16:25"),
+            ("16:25", "17:05"), ("17:10", "17:45"), ("17:45", "18:25"),
+        ]
+        tf_docente = campo("Nombre y Apellidos del Docente", expand=True)
+        tf_cedula = campo("Cédula", width=190)
+        tf_correo = campo("Correo electrónico", expand=True)
+        dd_condicion = ddrop(
+            "Condición Docente",
+            [ft.dropdown.Option(v) for v in ("Contratado/a", "Ordinario/a", "Otro")],
+            value="Contratado/a",
+            width=220,
         )
-
-        def on_car(e):
-            k = dd_car.value
-            mats = MATERIAS.get(k, [])
-            if not mats and self._all:
-                mats_dict = {}
-                for item in self._all:
-                    if item.get("carrera_id") == k:
-                        mnom = item.get("materia", "")
-                        if mnom and mnom not in mats_dict:
-                            mats_dict[mnom] = {
-                                "nombre": mnom,
-                                "horas": item.get("horas", 2),
-                                "ciclo": item.get("ciclo", "INTRODUCTORIO"),
-                            }
-                mats = list(mats_dict.values())
-            dd_mat.options = [ft.dropdown.Option(m["nombre"]) for m in mats]
-            dd_mat.value   = None
-            dd_mat.update()
-
-        def on_mat(e):
-            k, n = dd_car.value, dd_mat.value
-            if k and n:
-                mats = MATERIAS.get(k, [])
-                if not mats and self._all:
-                    mats = [
-                        {"nombre": item["materia"], "horas": item.get("horas", 2), "ciclo": item.get("ciclo", "INTRODUCTORIO")}
-                        for item in self._all if item.get("carrera_id") == k
-                    ]
-                for m in mats:
-                    if m["nombre"] == n:
-                        tf_hrs.value = str(m["horas"])
-                        dd_cic.value = m["ciclo"]
-                        tf_hrs.update(); dd_cic.update()
-                        break
-
-        dd_car.on_change = on_car
-        dd_mat.on_change = on_mat
-
-        def generar(e):
-            vacios = [n for n, w in [("Carrera", dd_car.value), ("Docente", dd_doc.value), ("Materia", dd_mat.value), ("Horas", tf_hrs.value)] if not w]
-            if vacios:
-                res.content = ft.Row([
-                    ft.Icon(ft.Icons.ERROR_ROUNDED, color=RED, size=18),
-                    ft.Text(f"Completa: {', '.join(vacios)}", color=RED, size=13),
-                ], spacing=10)
-                res.bgcolor = alpha_col(RED, 0.15); res.border = _ba(1, alpha_col(RED, 0.5))
-                res.update(); return
-
-            res.content = ft.Row([
-                ft.ProgressRing(width=22, height=22, stroke_width=3, color=BLUE),
-                ft.Text("Generando horario sin conflictos...", color=TG, size=13),
-            ], spacing=12)
-            res.bgcolor = alpha_col(BLUE, 0.12); res.border = _ba(1, BOR); res.update()
-
-            datos = {
-                "carrera_id": dd_car.value, "docente": dd_doc.value,
-                "materia": dd_mat.value, "horas": int(tf_hrs.value or 2),
-                "ciclo": dd_cic.value or "INTRODUCTORIO",
-                "seccion": int(tf_sec.value or 10100), "periodo": dd_per.value or "2026-2",
-                "ambiente_fijo": (dd_amb.value or "").strip().upper(),
-            }
-            entrada = self.motor.registrar(datos, guardar_bd=True)
-            self._all = self.motor.entradas()
-
-            if entrada.get("_error"):
-                res.content = ft.Column([
-                    ft.Row([ft.Icon(ft.Icons.ERROR_ROUNDED, color=RED, size=18),
-                            ft.Text("Sin disponibilidad", color=RED, size=13, weight=ft.FontWeight.W_600)], spacing=8),
-                    ft.Text(entrada["_error"], color=TG, size=12),
-                ], spacing=6)
-                res.bgcolor = alpha_col(RED, 0.15); res.border = _ba(1, alpha_col(RED, 0.5))
-            else:
-                ci  = CARRERAS.get(entrada["carrera_id"], {})
-                col = ci.get("color", BLUE)
-
-                def fr(lbl, val, vc=TW):
-                    return ft.Row([
-                        ft.Text(lbl, color=TG, size=12, width=160),
-                        ft.Text(val, color=vc, size=12, weight=ft.FontWeight.W_500, expand=True),
-                    ])
-
-                res.content = ft.Column([
-                    ft.Row([
-                        ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, color=GRN, size=20),
-                        ft.Text("Horario generado exitosamente!", color=GRN, size=14, weight=ft.FontWeight.W_700),
-                    ], spacing=8),
-                    ft.Container(height=14),
-                    ft.Container(content=ft.Column([
-                        fr("Carrera:",       ci.get("nombre", ""), col),
-                        fr("Docente:",       entrada["docente"]),
-                        fr("Materia:",       entrada["materia"]),
-                        fr("Ciclo:",         entrada["ciclo"]),
-                        divl(),
-                        fr("Dia asignado:",  entrada["dia"],        BLUE),
-                        fr("Horario:",       entrada["franja"],     BLUE),
-                        fr("Ambiente:",      entrada["ambiente"],   ORG),
-                        fr("Cap. maxima:",   f"{MAX_EST} estudiantes", GRN),
-                        fr("Conflictos:",    "Ninguno detectado",   GRN),
-                    ], spacing=8), bgcolor=BG_P, border_radius=10, padding=_pa(14)),
-                ], spacing=0)
-                res.bgcolor = alpha_col(GRN, 0.15); res.border = _ba(1, alpha_col(GRN, 0.5))
-                self._sb_refresh(); self.page.update()
-
-            res.update()
-
-        def paso(n, txt):
-            return ft.Container(
-                content=ft.Row([
-                    ft.Container(
-                        content=ft.Text(n, color=TW, size=10, weight=ft.FontWeight.BOLD),
-                        bgcolor=BLUE, border_radius=12, width=22, height=22,
-                        alignment=ft.alignment.center,
-                    ),
-                    ft.Text(txt, color=TG, size=12, expand=True),
-                ], spacing=10),
-                margin=_mo(bottom=8),
-            )
-
-        btn_generar = ft.Container(
-            content=ft.Row([
-                ft.Icon(ft.Icons.AUTO_AWESOME_ROUNDED, color=TW, size=18),
-                ft.Text("Generar Horario Automatico", color=TW, size=14, weight=ft.FontWeight.W_600)
-            ], alignment=ft.MainAxisAlignment.CENTER, spacing=8),
-            bgcolor=BLUE, border_radius=10, padding=_ps(20, 16),
-            on_click=generar, ink=True,
-        )
-
-        dd_amb = ddrop(
-            "Ambiente Asignado (Aula - Opcional)",
-            [ft.dropdown.Option("", "Asignación Automática Sin Conflictos")] + [ft.dropdown.Option(a) for a in AMBIENTES],
-            value="",
+        dd_carrera = ddrop(
+            "Carrera Universitaria",
+            [ft.dropdown.Option(c["nombre"]) for c in CARRERAS.values()],
             expand=True,
         )
-
-        pf = ft.Container(
-            content=ft.Column([
-                ft.Text("Datos de la Carga", color=TW, size=15, weight=ft.FontWeight.W_600),
-                divl(), ft.Container(height=12),
-                ft.Container(content=ft.Column([
-                    ft.Row([ft.Icon(ft.Icons.INFO_ROUNDED, color=BLUE, size=15),
-                            ft.Text("Restricciones del Sistema", color=TW, size=12, weight=ft.FontWeight.W_600)], spacing=8),
-                    ft.Container(height=4),
-                    ft.Text(f"- Maximo {MAX_EST} estudiantes por ambiente", color=TG, size=11),
-                    ft.Text(f"- {len(AMBIENTES)} ambientes disponibles en total", color=TG, size=11),
-                    ft.Text("- El sistema garantiza 0 conflictos", color=GRN, size=11),
-                ], spacing=3), bgcolor=alpha_col(BLUE, 0.12), border_radius=10, padding=_pa(12), border=_ba(1, alpha_col(BLUE, 0.4))),
-                ft.Container(height=14),
-                ft.Row([dd_car, dd_mat], spacing=12),
-                ft.Container(height=10),
-                ft.Row([dd_doc, dd_cic], spacing=12),
-                ft.Container(height=10),
-                ft.Row([dd_per, tf_hrs, tf_sec], spacing=12),
-                ft.Container(height=10),
-                ft.Row([dd_amb], spacing=12),
-                ft.Container(height=20),
-                btn_generar
-            ], spacing=0),
-            bgcolor=BG_C, border_radius=14, padding=_pa(22), border=_ba(1, BOR), expand=True,
+        dd_ambiente = ddrop(
+            "Ambiente (opcional)",
+            [ft.dropdown.Option(a) for a in AMBIENTES],
+            value=None,
+            expand=True,
+        )
+        tf_materias = ft.TextField(
+            label="Materias que imparte (una por línea)",
+            multiline=True,
+            min_lines=3,
+            max_lines=6,
+            border_radius=10,
+            expand=True,
+        )
+        celdas = {}
+        encabezado_horas = ft.Row(
+            [
+                ft.Container(width=94),
+                *[
+                    ft.Container(
+                        content=ft.Text(f"{inicio}\n{fin}", size=9, color=TG, text_align=ft.TextAlign.CENTER),
+                        width=68,
+                        alignment=ft.alignment.center,
+                    )
+                    for inicio, fin in franjas
+                ],
+            ],
+            spacing=2,
+            scroll=ft.ScrollMode.AUTO,
+        )
+        filas_horario = [encabezado_horas]
+        for dia in DIAS:
+            checks = []
+            for indice, _ in enumerate(franjas):
+                check = ft.Checkbox(value=False, scale=0.75)
+                celdas[(dia, indice)] = check
+                checks.append(ft.Container(content=check, width=68, alignment=ft.alignment.center))
+            filas_horario.append(
+                ft.Row(
+                    [
+                        ft.Container(
+                            content=ft.Text(dia, size=11, color=TW, weight=ft.FontWeight.W_600),
+                            width=94,
+                        ),
+                        *checks,
+                    ],
+                    spacing=2,
+                    scroll=ft.ScrollMode.AUTO,
+                )
+            )
+        estado = ft.Container(
+            content=ft.Text("Complete los datos del docente y seleccione su disponibilidad.", color=TG, size=12),
+            bgcolor=alpha_col(BLUE, 0.1),
+            border=_ba(1, BOR),
+            border_radius=10,
+            padding=_pa(12),
         )
 
-        pr = ft.Container(
-            content=ft.Column([
-                ft.Text("Resultado del Sistema", color=TW, size=15, weight=ft.FontWeight.W_600),
-                divl(), ft.Container(height=12),
-                res,
-                ft.Container(height=18),
-                ft.Text("Como funciona el motor?", color=TW, size=13, weight=ft.FontWeight.W_600),
-                ft.Container(height=10),
-                paso("1", "Recibes solo los datos esenciales del docente y la materia."),
-                paso("2", "El motor verifica la disponibilidad del docente en cada franja."),
-                paso("3", "Asigna el aula especificada o busca un ambiente libre automáticamente."),
-                paso("4", "Confirma que no existen superposiciones en ninguna carrera ni aula."),
-                paso("5", "Registra la asignacion en la base SQLite de forma permanente."),
-            ], spacing=0),
-            bgcolor=BG_C, border_radius=14, padding=_pa(22), border=_ba(1, BOR), expand=True,
-        )
+        def guardar(e=None):
+            materias = [m.strip() for m in (tf_materias.value or "").splitlines() if m.strip()]
+            disponibilidades = [
+                (DIAS_ORDEN[DIAS.index(dia)], franjas[indice][0], franjas[indice][1])
+                for (dia, indice), check in celdas.items()
+                if check.value
+            ]
+            try:
+                resultado = registrar_ficha_docente({
+                    "docente": tf_docente.value,
+                    "cedula": tf_cedula.value,
+                    "correo": tf_correo.value,
+                    "condicion": dd_condicion.value,
+                    "carrera": dd_carrera.value,
+                    "ambiente": dd_ambiente.value,
+                    "materias": materias,
+                    "disponibilidades": disponibilidades,
+                })
+            except Exception as ex:
+                estado.content = ft.Text(f"No se pudo guardar la ficha: {ex}", color=RED, size=12)
+                estado.bgcolor = alpha_col(RED, 0.14)
+                estado.border = _ba(1, alpha_col(RED, 0.5))
+                estado.update()
+                return
+            if resultado.get("errores"):
+                mensaje = " ".join(resultado["errores"])
+                estado.content = ft.Text(mensaje, color=RED, size=12)
+                estado.bgcolor = alpha_col(RED, 0.14)
+                estado.border = _ba(1, alpha_col(RED, 0.5))
+                estado.update()
+                return
 
-        # Botones de acción rápida en el encabezado
-        btn_vnc_ocr = ft.ElevatedButton(
-            "Escanear Hoja PDF/Img",
-            icon=ft.Icons.DOCUMENT_SCANNER_ROUNDED,
-            bgcolor=CYAN,
+            try:
+                generacion = generar_horarios_automaticos()
+                self._all = self.motor.sincronizar_desde_sqlite()
+            except Exception as ex:
+                estado.content = ft.Text(
+                    f"La ficha se guardó, pero no se pudieron generar los horarios: {ex}",
+                    color=RED,
+                    size=12,
+                )
+                estado.bgcolor = alpha_col(RED, 0.14)
+                estado.border = _ba(1, alpha_col(RED, 0.5))
+                estado.update()
+                return
+            asignados = resultado.get("insertados", 0)
+            pendientes = generacion.get("pendientes", 0)
+            estado.content = ft.Column([
+                ft.Text(
+                    f"Ficha de {resultado['docente']} guardada. {asignados} materia(s) registradas.",
+                    color=GRN,
+                    size=12,
+                    weight=ft.FontWeight.W_600,
+                ),
+                ft.Text(
+                    f"Bloques pendientes por disponibilidad o conflictos: {pendientes}.",
+                    color=ORG if pendientes else TG,
+                    size=12,
+                ),
+            ], spacing=4)
+            estado.bgcolor = alpha_col(GRN, 0.14)
+            estado.border = _ba(1, alpha_col(GRN, 0.5))
+            estado.update()
+            self._sb_refresh()
+            self._mc_refresh()
+            self.page.update()
+
+        btn_guardar = ft.ElevatedButton(
+            "Guardar ficha y generar horarios",
+            icon=ft.Icons.SAVE_ROUNDED,
+            bgcolor=BLUE,
             color=WHITE,
-            on_click=self._importar_hoja_docente_dialogo,
-            tooltip="Escanear y procesar foto de celular o PDF de disponibilidad académica",
+            on_click=guardar,
         )
-
-        btn_vnc_arch = ft.ElevatedButton(
-            "Cargar Excel/Word/TXT",
+        btn_importar = ft.OutlinedButton(
+            "Importar planificación masiva",
             icon=ft.Icons.UPLOAD_FILE_ROUNDED,
-            bgcolor=PURP,
-            color=WHITE,
             on_click=self._importar_archivo_dialogo,
-            tooltip="Importar planificación académica masiva desde archivo",
         )
-
-        encabezado_vnc = ft.Row([
-            titulo("Nueva Carga Académica", "Registre asignaciones manualmente o cargue archivos digitales y fotografías físicas."),
-            ft.Container(expand=True),
-            btn_vnc_ocr,
-            btn_vnc_arch,
-        ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER)
-
-        # Banner interactivo de carga rápida
-        banner_carga_rapida = ft.Container(
-            content=ft.Row([
-                ft.Container(
-                    content=ft.Row([
-                        ft.Container(
-                            content=ft.Icon(ft.Icons.DOCUMENT_SCANNER_ROUNDED, color=WHITE, size=24),
-                            bgcolor=CYAN, border_radius=10, padding=_pa(10),
-                        ),
-                        ft.Column([
-                            ft.Text("Cargar Hoja Física de Disponibilidad (Foto o PDF)", color=TW, size=13, weight=ft.FontWeight.BOLD),
-                            ft.Text("Sube la foto del teléfono o escaneo del profesor para extraer datos con OCR automático.", color=TG, size=11),
-                        ], spacing=2, expand=True),
-                        ft.ElevatedButton(
-                            "Subir Foto / PDF",
-                            icon=ft.Icons.FILE_UPLOAD_ROUNDED,
-                            bgcolor=CYAN,
-                            color=WHITE,
-                            on_click=self._importar_hoja_docente_dialogo,
-                        ),
-                    ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                    bgcolor=BG_C, border_radius=12, padding=_pa(14),
-                    border=_ba(1, alpha_col(CYAN, 0.45)), expand=True,
-                ),
-                ft.Container(
-                    content=ft.Row([
-                        ft.Container(
-                            content=ft.Icon(ft.Icons.UPLOAD_FILE_ROUNDED, color=WHITE, size=24),
-                            bgcolor=PURP, border_radius=10, padding=_pa(10),
-                        ),
-                        ft.Column([
-                            ft.Text("Importar Planificación Masiva (Excel / Word / TXT)", color=TW, size=13, weight=ft.FontWeight.BOLD),
-                            ft.Text("Carga listas completas de asignaturas y profesores desde hojas de cálculo o documentos.", color=TG, size=11),
-                        ], spacing=2, expand=True),
-                        ft.ElevatedButton(
-                            "Cargar Archivo",
-                            icon=ft.Icons.UPLOAD_FILE_ROUNDED,
-                            bgcolor=PURP,
-                            color=WHITE,
-                            on_click=self._importar_archivo_dialogo,
-                        ),
-                    ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                    bgcolor=BG_C, border_radius=12, padding=_pa(14),
-                    border=_ba(1, alpha_col(PURP, 0.45)), expand=True,
-                ),
-            ], spacing=14),
-            margin=_mo(bottom=16),
-        )
-
-        divisor_seccion = ft.Container(
-            content=ft.Row([
-                ft.Icon(ft.Icons.EDIT_NOTE_ROUNDED, color=BLUE, size=18),
-                ft.Text("O REGISTRAR MATERIA MANUALMENTE", color=TW, size=12, weight=ft.FontWeight.BOLD),
-                ft.Container(expand=True, height=1, bgcolor=BOR),
-            ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            margin=_mo(bottom=14),
-        )
-
         return ft.Column([
-            encabezado_vnc,
-            ft.Container(height=18),
-            banner_carga_rapida,
-            divisor_seccion,
-            ft.Row([pf, pr], spacing=20, vertical_alignment=ft.CrossAxisAlignment.START),
-            ft.Container(height=10),
-        ], spacing=0)
+            ft.Row([
+                titulo("Nueva Carga", "Registre manualmente los datos del docente, sus materias y disponibilidad."),
+                ft.Container(expand=True),
+                btn_importar,
+            ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ft.Container(height=16),
+            ft.Container(
+                content=ft.Column([
+                    ft.Text("Datos del docente", color=TW, size=15, weight=ft.FontWeight.W_600),
+                    divl(),
+                    ft.Row([tf_docente, tf_cedula], spacing=12),
+                    ft.Container(height=8),
+                    ft.Row([tf_correo, dd_condicion], spacing=12),
+                    ft.Container(height=8),
+                    ft.Row([dd_carrera, dd_ambiente], spacing=12),
+                    ft.Container(height=14),
+                    tf_materias,
+                    ft.Container(height=18),
+                    ft.Text("Disponibilidad semanal", color=TW, size=15, weight=ft.FontWeight.W_600),
+                    ft.Text("Marque las franjas en las que el docente puede impartir clases.", color=TG, size=11),
+                    ft.Container(height=8),
+                    ft.Container(
+                        content=ft.Column(filas_horario, spacing=4, scroll=ft.ScrollMode.AUTO),
+                        bgcolor=BG_P,
+                        border=_ba(1, BOR),
+                        border_radius=10,
+                        padding=_pa(10),
+                    ),
+                    ft.Container(height=14),
+                    estado,
+                    ft.Container(height=12),
+                    ft.Row([btn_guardar], alignment=ft.MainAxisAlignment.END),
+                ], spacing=6),
+                bgcolor=BG_C,
+                border_radius=14,
+                padding=_pa(20),
+                border=_ba(1, BOR),
+            ),
+        ], spacing=0, scroll=ft.ScrollMode.AUTO)
 
-    # ══════════════════════════════════════════════════
-    #  VISTA HORARIOS (OFERTA ACADÉMICA GENERAL FLUIDA Y PAGINADA)
-    # ══════════════════════════════════════════════════
+    def _vnc(self) -> ft.Control:
+        return self._vnc_ficha_docente()
+
     def _vh(self) -> ft.Control:
         dd_fc = ddrop(
             "Filtrar Carrera",
@@ -3918,9 +3653,18 @@ class App:
     def _abrir_dialogo_editar_docente(self, docente: str, al_actualizar=None):
         """Permite modificar los datos de un docente o eliminarlo individualmente."""
         info = obtener_info_profesores_dict().get(str(docente).strip().upper(), {})
+        materias_actuales = obtener_materias_profesor(docente)
         tf_nombre = campo("Nombre completo", value=docente, expand=True)
         tf_cedula = campo("Cédula", value=info.get("cedula", ""), width=190)
         tf_email = campo("Correo electrónico", value=info.get("email", ""), expand=True)
+        tf_materias = campo(
+            "Materias que dicta (una materia por línea)",
+            value="\n".join(materias_actuales),
+            multiline=True,
+            min_lines=3,
+            max_lines=7,
+            expand=True,
+        )
         dd_cond = ddrop(
             "Condición",
             [
@@ -3943,6 +3687,15 @@ class App:
                 tf_nombre.error_text = "El nombre del docente es obligatorio"
                 tf_nombre.update()
                 return
+            materias_nuevas = [
+                materia.strip()
+                for materia in (tf_materias.value or "").splitlines()
+                if materia.strip()
+            ]
+            if not materias_nuevas:
+                tf_materias.error_text = "Debe indicar al menos una materia."
+                tf_materias.update()
+                return
 
             ok = actualizar_profesor(
                 docente,
@@ -3950,13 +3703,20 @@ class App:
                 cedula=(tf_cedula.value or "").strip(),
                 email=(tf_email.value or "").strip(),
                 condicion=dd_cond.value or "Contratado/a",
+                materias=materias_nuevas,
             )
             if not ok:
-                tf_nombre.error_text = "No se pudo actualizar. Verifique que el nombre no esté repetido."
+                tf_nombre.error_text = "Verifique que el nombre del docente no esté repetido."
+                tf_materias.error_text = (
+                    "No se pudo guardar. Revise que las materias no sean ambiguas y que "
+                    "el docente tenga una carrera registrada para las materias nuevas."
+                )
+                tf_materias.update()
                 tf_nombre.update()
                 return
 
             self._cerrar_modal(dlg)
+            res_sched = generar_horarios_automaticos()
             self.docente_calendario_sel = nombre_nuevo.upper()
             self.motor.limpiar_memoria()
             self._all = self.motor.sincronizar_desde_sqlite()
@@ -3969,7 +3729,13 @@ class App:
                 al_actualizar()
             else:
                 self._refrescar_vista_actual()
-            self._mostrar_notificacion(f"Docente '{nombre_nuevo.upper()}' actualizado.", color=GRN)
+            if res_sched.get("pendientes"):
+                self._mostrar_notificacion(
+                    f"Docente actualizado; {res_sched['pendientes']} bloques quedaron pendientes por conflictos o disponibilidad.",
+                    color=ORG,
+                )
+            else:
+                self._mostrar_notificacion(f"Docente '{nombre_nuevo.upper()}' actualizado.", color=GRN)
 
         def abrir_confirmacion_eliminar(e=None):
             self._cerrar_modal(dlg)
@@ -3989,6 +3755,7 @@ class App:
                     tf_nombre,
                     ft.Row([tf_cedula, dd_cond], spacing=10),
                     tf_email,
+                    tf_materias,
                     ft.Container(height=4),
                     ft.Text(
                         f"Este docente tiene {total_clases} clase(s) registrada(s).",
