@@ -1428,6 +1428,27 @@ class App:
         )
         self._abrir_modal(dlg)
 
+    def _procesar_archivo_ruta(self, ruta: str):
+        nom_arch = os.path.basename(ruta)
+        try:
+            res = importar_archivo(ruta)
+            insertados = res.get("procesados", 0)
+            errores = res.get("errores", [])
+            generar_horarios_automaticos()
+            self._all = self.motor.sincronizar_desde_sqlite()
+            if DOCENTES and not self.docente_calendario_sel:
+                self.docente_calendario_sel = DOCENTES[0]
+            if insertados > 0:
+                self.ultimo_mensaje = f"Archivo '{nom_arch}' procesado con éxito: {insertados} asignaciones registradas en el sistema."
+                self._sb_refresh()
+                self._mc_refresh()
+                self._mostrar_notificacion(f"Archivo '{nom_arch}' importado: {insertados} cursos registrados sin conflictos.", color=GRN)
+            else:
+                det = f" (Errores: {', '.join(errores[:2])})" if errores else ""
+                self._mostrar_notificacion(f"No se pudieron extraer cursos válidos de '{nom_arch}'{det}", color=ORG)
+        except Exception as ex:
+            self._mostrar_notificacion(f"Error al procesar '{nom_arch}': {ex}", color=RED)
+
     def _procesar_hoja_docente_ruta(self, ruta: str):
         ext = os.path.splitext(ruta)[1].lower()
         if ext == ".pdf":
@@ -2455,9 +2476,95 @@ class App:
             bgcolor=BG_C, border_radius=14, padding=_pa(22), border=_ba(1, BOR), expand=True,
         )
 
+        # Botones de acción rápida en el encabezado
+        btn_vnc_ocr = ft.ElevatedButton(
+            "Escanear Hoja PDF/Img",
+            icon=ft.Icons.DOCUMENT_SCANNER_ROUNDED,
+            bgcolor=CYAN,
+            color=WHITE,
+            on_click=self._importar_hoja_docente_dialogo,
+            tooltip="Escanear y procesar foto de celular o PDF de disponibilidad académica",
+        )
+
+        btn_vnc_arch = ft.ElevatedButton(
+            "Cargar Excel/Word/TXT",
+            icon=ft.Icons.UPLOAD_FILE_ROUNDED,
+            bgcolor=PURP,
+            color=WHITE,
+            on_click=self._importar_archivo_dialogo,
+            tooltip="Importar planificación académica masiva desde archivo",
+        )
+
+        encabezado_vnc = ft.Row([
+            titulo("Nueva Carga Académica", "Registre asignaciones manualmente o cargue archivos digitales y fotografías físicas."),
+            ft.Container(expand=True),
+            btn_vnc_ocr,
+            btn_vnc_arch,
+        ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+
+        # Banner interactivo de carga rápida
+        banner_carga_rapida = ft.Container(
+            content=ft.Row([
+                ft.Container(
+                    content=ft.Row([
+                        ft.Container(
+                            content=ft.Icon(ft.Icons.DOCUMENT_SCANNER_ROUNDED, color=WHITE, size=24),
+                            bgcolor=CYAN, border_radius=10, padding=_pa(10),
+                        ),
+                        ft.Column([
+                            ft.Text("Cargar Hoja Física de Disponibilidad (Foto o PDF)", color=TW, size=13, weight=ft.FontWeight.BOLD),
+                            ft.Text("Sube la foto del teléfono o escaneo del profesor para extraer datos con OCR automático.", color=TG, size=11),
+                        ], spacing=2, expand=True),
+                        ft.ElevatedButton(
+                            "Subir Foto / PDF",
+                            icon=ft.Icons.FILE_UPLOAD_ROUNDED,
+                            bgcolor=CYAN,
+                            color=WHITE,
+                            on_click=self._importar_hoja_docente_dialogo,
+                        ),
+                    ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    bgcolor=BG_C, border_radius=12, padding=_pa(14),
+                    border=_ba(1, alpha_col(CYAN, 0.45)), expand=True,
+                ),
+                ft.Container(
+                    content=ft.Row([
+                        ft.Container(
+                            content=ft.Icon(ft.Icons.UPLOAD_FILE_ROUNDED, color=WHITE, size=24),
+                            bgcolor=PURP, border_radius=10, padding=_pa(10),
+                        ),
+                        ft.Column([
+                            ft.Text("Importar Planificación Masiva (Excel / Word / TXT)", color=TW, size=13, weight=ft.FontWeight.BOLD),
+                            ft.Text("Carga listas completas de asignaturas y profesores desde hojas de cálculo o documentos.", color=TG, size=11),
+                        ], spacing=2, expand=True),
+                        ft.ElevatedButton(
+                            "Cargar Archivo",
+                            icon=ft.Icons.UPLOAD_FILE_ROUNDED,
+                            bgcolor=PURP,
+                            color=WHITE,
+                            on_click=self._importar_archivo_dialogo,
+                        ),
+                    ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    bgcolor=BG_C, border_radius=12, padding=_pa(14),
+                    border=_ba(1, alpha_col(PURP, 0.45)), expand=True,
+                ),
+            ], spacing=14),
+            margin=_mo(bottom=16),
+        )
+
+        divisor_seccion = ft.Container(
+            content=ft.Row([
+                ft.Icon(ft.Icons.EDIT_NOTE_ROUNDED, color=BLUE, size=18),
+                ft.Text("O REGISTRAR MATERIA MANUALMENTE", color=TW, size=12, weight=ft.FontWeight.BOLD),
+                ft.Container(expand=True, height=1, bgcolor=BOR),
+            ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            margin=_mo(bottom=14),
+        )
+
         return ft.Column([
-            titulo("Nueva Carga Academica", "Ingresa los datos o carga un archivo (.xlsx, .docx, .txt); el sistema asigna horario y ambiente sin conflictos."),
-            ft.Container(height=22),
+            encabezado_vnc,
+            ft.Container(height=18),
+            banner_carga_rapida,
+            divisor_seccion,
             ft.Row([pf, pr], spacing=20, vertical_alignment=ft.CrossAxisAlignment.START),
             ft.Container(height=10),
         ], spacing=0)
