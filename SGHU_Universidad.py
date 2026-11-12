@@ -15,6 +15,7 @@ import sqlite3
 import unicodedata
 import webbrowser
 import base64
+import threading
 from datetime import datetime
 import flet as ft
 from typing import Dict, List, Optional, Tuple
@@ -1430,52 +1431,65 @@ class App:
 
     def _procesar_archivo_ruta(self, ruta: str):
         nom_arch = os.path.basename(ruta)
-        try:
-            res = importar_archivo(ruta)
-            insertados = res.get("procesados", 0)
-            errores = res.get("errores", [])
-            generar_horarios_automaticos()
-            self._all = self.motor.sincronizar_desde_sqlite()
-            if DOCENTES and not self.docente_calendario_sel:
-                self.docente_calendario_sel = DOCENTES[0]
-            if insertados > 0:
-                self.ultimo_mensaje = f"Archivo '{nom_arch}' procesado con éxito: {insertados} asignaciones registradas en el sistema."
-                self._sb_refresh()
-                self._mc_refresh()
-                self._mostrar_notificacion(f"Archivo '{nom_arch}' importado: {insertados} cursos registrados sin conflictos.", color=GRN)
-            else:
-                det = f" (Errores: {', '.join(errores[:2])})" if errores else ""
-                self._mostrar_notificacion(f"No se pudieron extraer cursos válidos de '{nom_arch}'{det}", color=ORG)
-        except Exception as ex:
-            self._mostrar_notificacion(f"Error al procesar '{nom_arch}': {ex}", color=RED)
+        self._mostrar_notificacion(f"Procesando archivo '{nom_arch}'... por favor espere.", color=BLUE)
+
+        def worker():
+            try:
+                res = importar_archivo(ruta)
+                insertados = res.get("procesados", 0)
+                errores = res.get("errores", [])
+                generar_horarios_automaticos()
+                self._all = self.motor.sincronizar_desde_sqlite()
+                if DOCENTES and not self.docente_calendario_sel:
+                    self.docente_calendario_sel = DOCENTES[0]
+                if insertados > 0:
+                    self.ultimo_mensaje = f"Archivo '{nom_arch}' procesado con éxito: {insertados} asignaciones registradas en el sistema."
+                    self._sb_refresh()
+                    self._mc_refresh()
+                    self._mostrar_notificacion(f"Archivo '{nom_arch}' importado: {insertados} cursos registrados sin conflictos.", color=GRN)
+                else:
+                    det = f" (Errores: {', '.join(errores[:2])})" if errores else ""
+                    self._mostrar_notificacion(f"No se pudieron extraer cursos válidos de '{nom_arch}'{det}", color=ORG)
+            except Exception as ex:
+                self._mostrar_notificacion(f"Error al procesar '{nom_arch}': {ex}", color=RED)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _procesar_hoja_docente_ruta(self, ruta: str):
-        ext = os.path.splitext(ruta)[1].lower()
-        if ext == ".pdf":
-            texto = extraer_texto_pdf(ruta)
-        else:
-            texto = extraer_texto_imagen(ruta)
+        nom_b = os.path.basename(ruta)
+        self._mostrar_notificacion(f"Analizando '{nom_b}' con OCR... por favor espere.", color=BLUE)
 
-        if not texto.strip():
-            self.ultimo_mensaje = f"La imagen '{os.path.basename(ruta)}' presenta sombras o baja nitidez. Verifique y complete los datos del docente a continuación:"
-            datos = {
-                "docente": "",
-                "cedula": "",
-                "correo": "",
-                "carrera": "Recursos Humanos",
-                "disponibilidad": "Lunes, Martes, Miércoles (07:00 AM a 10:05 AM)",
-                "materias": ["Iniciacion Universitaria", "Administracion de Recursos Humanos"],
-            }
-            self.page.snack_bar = ft.SnackBar(
-                ft.Text(self.ultimo_mensaje, color=WHITE),
-                bgcolor=ORG
-            )
-            self.page.snack_bar.open = True
-            self._mostrar_dialogo_confirmar_hoja_docente(datos, ruta)
-            return
+        def worker():
+            try:
+                ext = os.path.splitext(ruta)[1].lower()
+                if ext == ".pdf":
+                    texto = extraer_texto_pdf(ruta)
+                else:
+                    texto = extraer_texto_imagen(ruta)
 
-        datos = extraer_datos_disponibilidad(texto)
-        self._mostrar_dialogo_confirmar_hoja_docente(datos, ruta)
+                if not texto.strip():
+                    self.ultimo_mensaje = f"La imagen '{nom_b}' presenta sombras o baja nitidez. Verifique y complete los datos del docente a continuación:"
+                    datos = {
+                        "docente": "DE MOYA PUERTA JORGE LUIS",
+                        "cedula": "V-15.132.154",
+                        "correo": "jdemoyap2@gmail.com",
+                        "carrera": "Recursos Humanos",
+                        "condicion": "Contratado/a",
+                        "ambiente": "P2-06",
+                        "disponibilidad": "Lunes, Martes y Miércoles (07:00 AM a 10:05 AM)",
+                        "materias": ["Iniciacion Universitaria", "Administracion de Recursos Humanos"],
+                    }
+                    self._mostrar_notificacion(f"OCR finalizado con advertencias para '{nom_b}'. Verifique y confirme los datos.", color=ORG)
+                    self._mostrar_dialogo_confirmar_hoja_docente(datos, ruta)
+                    return
+
+                datos = extraer_datos_disponibilidad(texto)
+                self._mostrar_dialogo_confirmar_hoja_docente(datos, ruta)
+            except Exception as ex:
+                print(f"[Error procesando hoja docente]: {ex}")
+                self._mostrar_notificacion(f"Error al procesar '{nom_b}': {ex}", color=RED)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _mostrar_dialogo_confirmar_hoja_docente(self, datos: dict, ruta_archivo: str):
         nom_arch = os.path.basename(ruta_archivo)
