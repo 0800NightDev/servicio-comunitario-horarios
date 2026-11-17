@@ -34,12 +34,17 @@ from database import (
     get_or_create_salon,
     obtener_salones,
     obtener_salon,
+    obtener_codigos_materia,
+    obtener_nombres_materias,
+    obtener_secciones,
     obtener_capacidad_salon,
     actualizar_datos_ambiente,
     eliminar_salon,
     obtener_profesores,
-    actualizar_profesor,
     obtener_materias_profesor,
+    obtener_cargas_docente,
+    obtener_opciones_carga,
+    actualizar_ficha_docente_completa,
     eliminar_profesor,
     siguiente_codigo_ambiente,
     crear_ambiente,
@@ -238,9 +243,23 @@ CARRERAS_BASE: Dict[str,Dict] = {
     "EDUC_MATEM":  {"nombre":"Educ. Mencion Matematica", "mencion":"Docencia en Matematica",   "color":"#45B7D1"},
     "EDUC_INGLES": {"nombre":"Educ. Mencion Ingles",     "mencion":"Docencia en Ingles",       "color":"#96CEB4"},
     "ORGAN_SIS":   {"nombre":"Organizacion y Sistemas",  "mencion":"Sin Mencion",              "color":"#FFEAA7"},
+    "RMF":         {"nombre":"Recursos Mat. y Financieros", "mencion":"Recursos Materiales y Financieros", "color":"#54A0FF"},
+    "MERC":        {"nombre":"Mercadeo",                 "mencion":"Mercadeo",                 "color":"#1DD1A1"},
+    "INF":         {"nombre":"Informatica",               "mencion":"Informatica",              "color":"#F368E0"},
     "RRHH":        {"nombre":"Recursos Humanos",         "mencion":"Sin Mencion",              "color":"#DDA0DD"},
 }
 CARRERAS: Dict[str,Dict] = {k: dict(v) for k, v in CARRERAS_BASE.items()}
+
+MENCIONES_DOCENTE = [
+    "Administración de Recursos Humanos",
+    "Recursos Materiales y Financieros",
+    "Informática",
+    "Mercadeo",
+    "Organización y Sistemas",
+    "Docencia en Matemáticas",
+    "Docencia en Idioma Inglés",
+]
+CICLOS_ACADEMICOS = ["Introductorio", "General", "Electivo", "Profesional"]
 
 DOCENTES_BASE = [
     "ADA URSULINA BRITO CARDENAS","MARYELIN ALEJANDRA GONZALEZ",
@@ -331,6 +350,90 @@ def _sin_acentos(txt: str) -> str:
     ).upper().strip()
 
 
+def _es_ambiente_compartible(codigo: str) -> bool:
+    c = str(codigo or "").strip().upper()
+    return any(k in c for k in ("VIRTUAL", "COORDINAC", "ONLINE", "CANCHA", "AUDITORIO"))
+
+
+def sugerir_ambientes_libres(entradas: List[Dict], dia: str, inicio: str, fin: str, cantidad: int = 3) -> List[str]:
+    dia_normalizado = str(dia).strip().upper()
+    inicio_normalizado = str(inicio).strip()
+    fin_normalizado = str(fin).strip()
+    ocupados = set()
+    for entrada in entradas:
+        if str(entrada.get("dia", "")).strip().upper() != dia_normalizado:
+            continue
+        partes = str(entrada.get("franja", "")).split("-")
+        if len(partes) != 2:
+            continue
+        inicio_entry, fin_entry = partes[0].strip(), partes[1].strip()
+        if inicio_entry >= inicio_normalizado and inicio_entry < fin_normalizado:
+            ocupados.add(str(entrada.get("ambiente", "")).strip().upper())
+            continue
+        if fin_entry > inicio_normalizado and fin_entry <= fin_normalizado:
+            ocupados.add(str(entrada.get("ambiente", "")).strip().upper())
+            continue
+        if inicio_entry < inicio_normalizado and fin_entry > inicio_normalizado:
+            ocupados.add(str(entrada.get("ambiente", "")).strip().upper())
+    disponibles = [
+        ambiente
+        for ambiente in AMBIENTES
+        if str(ambiente).strip().upper() not in ocupados and not _es_ambiente_compartible(ambiente)
+    ]
+    return disponibles[:cantidad]
+
+
+def obtener_conflictos_horarios(entradas: List[Dict]) -> List[Dict]:
+    conflictos = []
+    for indice, entrada in enumerate(entradas):
+        dia_a = str(entrada.get("dia", "")).strip().upper()
+        franja_a = str(entrada.get("franja", ""))
+        partes_a = franja_a.split("-")
+        if len(partes_a) != 2:
+            continue
+        inicio_a, fin_a = partes_a[0].strip(), partes_a[1].strip()
+        for otra in entradas[indice + 1:]:
+            dia_b = str(otra.get("dia", "")).strip().upper()
+            if dia_a != dia_b:
+                continue
+            franja_b = str(otra.get("franja", ""))
+            partes_b = franja_b.split("-")
+            if len(partes_b) != 2:
+                continue
+            inicio_b, fin_b = partes_b[0].strip(), partes_b[1].strip()
+            if max(inicio_a, inicio_b) >= min(fin_a, fin_b):
+                continue
+            mismo_docente = str(entrada.get("docente", "")).strip().upper() == str(otra.get("docente", "")).strip().upper()
+            mismo_ambiente = str(entrada.get("ambiente", "")).strip().upper() == str(otra.get("ambiente", "")).strip().upper()
+            ambiente_compartible = _es_ambiente_compartible(entrada.get("ambiente", ""))
+            motivos = []
+            if mismo_docente:
+                motivos.append("docente")
+            if mismo_ambiente and not ambiente_compartible:
+                motivos.append("ambiente")
+            if not motivos:
+                continue
+            conf = {
+                "dia": entrada.get("dia", ""),
+                "inicio": inicio_a,
+                "fin": fin_a,
+                "docente_a": entrada.get("docente", ""),
+                "materia_a": entrada.get("materia", ""),
+                "ambiente_a": entrada.get("ambiente", ""),
+                "docente_b": otra.get("docente", ""),
+                "materia_b": otra.get("materia", ""),
+                "ambiente_b": otra.get("ambiente", ""),
+                "motivo": " y ".join(motivos),
+                "sugerencias": sugerir_ambientes_libres(entradas, dia_a, inicio_a, fin_a, cantidad=3),
+                "sugerencias_b": sugerir_ambientes_libres(entradas, dia_a, inicio_b, fin_b, cantidad=3),
+            }
+            conflictos.append(conf)
+    return conflictos
+
+
+def contar_conflictos_horarios(entradas: List[Dict]) -> int:
+    return len(obtener_conflictos_horarios(entradas))
+
 def _mapear_carrera_id(nombre_carrera: str, facultad_nombre: str = "") -> str:
     nc = _sin_acentos(nombre_carrera)
     if "INICIAL" in nc or "INIC" in nc:
@@ -341,6 +444,12 @@ def _mapear_carrera_id(nombre_carrera: str, facultad_nombre: str = "") -> str:
         return "EDUC_MATEM"
     if "INGLES" in nc:
         return "EDUC_INGLES"
+    if "RECURSOS MATERIALES" in nc or "RMF" in nc:
+        return "RMF"
+    if "MERCADEO" in nc:
+        return "MERC"
+    if "INFORMATICA" in nc or "INF" in nc:
+        return "INF"
     if "ORGANIZACION" in nc or "SISTEMA" in nc or "OYS" in nc:
         return "ORGAN_SIS"
     if "RECURSOS HUMANOS" in nc or "RRHH" in nc:
@@ -416,13 +525,21 @@ class Motor:
                         return {"dia": d, "franja": f, "ambiente": a}
         return None
 
-    def registrar(self, datos: Dict, guardar_bd: bool = True) -> Dict:
-        sl = self._slot(
-            datos["docente"],
-            datos.get("dia_fijo", ""),
-            datos.get("franja_fija", ""),
-            datos.get("ambiente_fijo", ""),
-        )
+    def registrar(self, datos: Dict, guardar_bd: bool = True, exact: bool = False) -> Dict:
+        if exact:
+            dia_exacto = str(datos.get("dia_fijo", "")).strip().upper()
+            franja_exacta = str(datos.get("franja_fija", "")).strip() or "07:40-09:20"
+            ambiente_exacto = str(datos.get("ambiente_fijo", "")).strip().upper() or "P1-01"
+            if ambiente_exacto not in AMBIENTES:
+                AMBIENTES.append(ambiente_exacto)
+            sl = {"dia": dia_exacto, "franja": franja_exacta, "ambiente": ambiente_exacto}
+        else:
+            sl = self._slot(
+                datos["docente"],
+                datos.get("dia_fijo", ""),
+                datos.get("franja_fija", ""),
+                datos.get("ambiente_fijo", ""),
+            )
         if sl is None:
             return {**datos, "_error": "Sin slots disponibles"}
         try:
@@ -569,7 +686,11 @@ class Motor:
             ciclo_raw = _sin_acentos(r["ciclo"] or "INTRODUCTORIO")
             if "PROF" in ciclo_raw:
                 ciclo_limpio = "PROFESIONAL"
-            elif "BASI" in ciclo_raw or "GEN" in ciclo_raw:
+            elif "ELECT" in ciclo_raw:
+                ciclo_limpio = "ELECTIVO"
+            elif "GEN" in ciclo_raw:
+                ciclo_limpio = "GENERAL"
+            elif "BASI" in ciclo_raw:
                 ciclo_limpio = "BASICO"
             else:
                 ciclo_limpio = "INTRODUCTORIO"
@@ -586,7 +707,7 @@ class Motor:
                 "franja_fija": franja,
                 "ambiente_fijo": amb_up,
             }
-            self.registrar(datos, guardar_bd=False)
+            self.registrar(datos, guardar_bd=False, exact=True)
 
         DOCENTES.sort()
         return list(self._lista)
@@ -606,6 +727,7 @@ class Motor:
             "amb_lib": max(0, total_amb - len(self._u)),
             "amb_tot": total_amb,
             "docs":    len({e["docente"] for e in t}),
+            "conflictos": contar_conflictos_horarios(t),
         }
 
 
@@ -652,6 +774,7 @@ def _seed_data(forzar_base: bool = False) -> Tuple[Motor, List[Dict]]:
     m = Motor()
     if not forzar_base:
         existentes = m.sincronizar_desde_sqlite()
+        recargar_docentes_desde_bd()
         if existentes:
             return m, existentes
         # Por defecto, el sistema se mantiene en blanco listo para registrar cursos nuevos
@@ -659,7 +782,7 @@ def _seed_data(forzar_base: bool = False) -> Tuple[Motor, List[Dict]]:
         CARRERAS.clear()
         CARRERAS.update({k: dict(v) for k, v in CARRERAS_BASE.items()})
         recargar_ambientes_desde_bd()
-        DOCENTES.clear()
+        recargar_docentes_desde_bd()
         return m, []
 
     marcar_iniciar_en_blanco(False)
@@ -823,7 +946,7 @@ def generar_reporte_html_imprimible(
     <div class="header">
         <h1>Universidad Nacional Experimental Simón Rodríguez (UNESR) — Núcleo Palo Verde</h1>
         <p><strong>Sistema de Oferta Académica y Horarios por Carrera y Docente — Periodo 2026-2</strong></p>
-        <p>Generado el: {fecha_str} &bull; Total asignaciones: {len(entradas)} &bull; Conflictos: 0</p>
+        <p>Generado el: {fecha_str} &bull; Total asignaciones: {len(entradas)} &bull; Conflictos: {contar_conflictos_horarios(entradas)}</p>
     </div>
 """]
 
@@ -1003,6 +1126,7 @@ def ddrop(lbl: str, opts, **kw) -> ft.Dropdown:
         "color": TW,
         "label_style": ft.TextStyle(color=TG),
         "border_radius": 10,
+        "menu_height": 240,
     }
     params.update(kw)
     return ft.Dropdown(**params)
@@ -1211,6 +1335,7 @@ class App:
         self._setup()
         self._build()
         self._nav("dashboard")
+        self._notificar_conflictos_si_hay()
 
     def _setup(self):
         p = self.page
@@ -1318,6 +1443,82 @@ class App:
             self.page.update()
         except Exception as ex:
             print(f"[Aviso SnackBar]: {ex}")
+
+    def _notificar_conflictos_si_hay(self):
+        conflictos = obtener_conflictos_horarios(self._all)
+        if not conflictos:
+            return
+
+        self.ultimo_mensaje = f"Atención: hay {len(conflictos)} conflicto(s) de horario."
+        items = [
+            ft.Text(
+                "Se encontraron las siguientes superposiciones de docente o ambiente:",
+                color=TL,
+                size=11,
+            ),
+        ]
+        for indice, conf in enumerate(conflictos[:10], 1):
+            items.append(
+                ft.Column([
+                    ft.Text(
+                        f"{indice}. {conf['dia']} · {conf['inicio']}–{conf['fin']} — {conf['motivo']}",
+                        color=RED,
+                        size=12,
+                        weight=ft.FontWeight.W_700,
+                    ),
+                    ft.Text(
+                        f"A: {conf['docente_a']} — {conf['materia_a']} ({conf['ambiente_a']})",
+                        color=TL,
+                        size=11,
+                    ),
+                    ft.Text(
+                        f"B: {conf['docente_b']} — {conf['materia_b']} ({conf['ambiente_b']})",
+                        color=TL,
+                        size=11,
+                    ),
+                    ft.Text(
+                        f"Ambientes libres para A: {', '.join(conf['sugerencias']) or 'Ninguno en ese horario'}",
+                        color=BLUE,
+                        size=10,
+                    ),
+                    ft.Text(
+                        f"Ambientes libres para B: {', '.join(conf['sugerencias_b']) or 'Ninguno en ese horario'}",
+                        color=BLUE,
+                        size=10,
+                    ),
+                ], spacing=2)
+            )
+        if len(conflictos) > 10:
+            items.append(ft.Text(f"Y {len(conflictos) - 10} conflicto(s) más...", color=TG, size=11))
+
+        def cerrar(e=None):
+            self._cerrar_modal(dlg)
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            bgcolor=BG_C,
+            title=ft.Row([
+                ft.Icon(ft.Icons.WARNING_ROUNDED, color=ORG, size=24),
+                ft.Text(f"Hay {len(conflictos)} conflicto(s) de horario", color=TW, size=16, weight=ft.FontWeight.W_700),
+            ], spacing=10),
+            content=ft.Container(
+                content=ft.Column(items, spacing=12, scroll=ft.ScrollMode.AUTO),
+                width=760,
+                height=500,
+            ),
+            actions=[
+                ft.TextButton("Ver Horarios", on_click=lambda _: (self._cerrar_modal(dlg), self._nav("horarios"))),
+                ft.ElevatedButton(
+                    "Entendido",
+                    icon=ft.Icons.CHECK_ROUNDED,
+                    bgcolor=BLUE,
+                    color=WHITE,
+                    on_click=cerrar,
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self._abrir_modal(dlg)
 
     def _on_fp_arch_result(self, e: ft.FilePickerResultEvent):
         if e.files and len(e.files) > 0:
@@ -1448,6 +1649,7 @@ class App:
                     )
                     self._sb_refresh()
                     self._mc_refresh()
+                    self._notificar_conflictos_si_hay()
                     if pendientes or res_sched.get("mensajes"):
                         detalle = res_sched.get("mensajes", [""])[0]
                         self._mostrar_notificacion(
@@ -2270,7 +2472,7 @@ class App:
                 ft.Container(height=4),
                 mrow("Cursos activos",   str(st["cursos"]),  BLUE),
                 mrow("Ambientes en uso", f"{st['amb_uso']}/{st['amb_tot']}", ORG),
-                mrow("Conflictos",       "0",                 GRN),
+                mrow("Conflictos",       str(st["conflictos"]), GRN if st["conflictos"] == 0 else RED),
                 mrow("Docentes",         str(st["docs"]),    CYAN),
                 ft.Container(height=4),
                 btn_eliminar_sb,
@@ -2314,7 +2516,7 @@ class App:
             stat_card("Total Cursos",     str(st["cursos"]),  ft.Icons.BOOK_ROUNDED,          BLUE, "Periodo 2026-2"),
             stat_card("Ambientes en Uso", str(st["amb_uso"]), ft.Icons.MEETING_ROOM_ROUNDED,  ORG,  f"de {st['amb_tot']} totales"),
             stat_card("Docentes Activos", str(st["docs"]),    ft.Icons.PEOPLE_ROUNDED,        PURP, "Periodo 2026-2"),
-            stat_card("Conflictos",       "0",                ft.Icons.VERIFIED_ROUNDED,      GRN,  "0 colisiones!"),
+            stat_card("Conflictos",       str(st["conflictos"]), ft.Icons.VERIFIED_ROUNDED if st["conflictos"] == 0 else ft.Icons.WARNING_ROUNDED, GRN if st["conflictos"] == 0 else RED,  "0 colisiones!" if st["conflictos"] == 0 else f"{st['conflictos']} colisiones"),
         ], spacing=14)
 
         enc = ft.Container(
@@ -2484,6 +2686,7 @@ class App:
             ("14:10", "14:55"), ("14:55", "15:35"), ("15:40", "16:25"),
             ("16:25", "17:05"), ("17:10", "17:45"), ("17:45", "18:25"),
         ]
+
         tf_docente = campo("Nombre y Apellidos del Docente", expand=True)
         tf_cedula = campo("Cédula", width=190)
         tf_correo = campo("Correo electrónico", expand=True)
@@ -2493,26 +2696,199 @@ class App:
             value="Contratado/a",
             width=220,
         )
-        dd_carrera = ddrop(
-            "Carrera Universitaria",
-            [ft.dropdown.Option(c["nombre"]) for c in CARRERAS.values()],
-            expand=True,
+
+        opciones = obtener_opciones_carga()
+        codigos_disponibles = opciones["codigos"]
+        secciones_disponibles = opciones["secciones"]
+        nombres_disponibles = obtener_nombres_materias()
+        codigos_existentes = {codigo.strip().upper() for codigo in codigos_disponibles}
+        secciones_existentes = {seccion.strip() for seccion in secciones_disponibles}
+        carreras_disponibles = list(dict.fromkeys(
+            [c["nombre"] for c in CARRERAS.values()]
+            + opciones["carreras"]
+        ))
+        menciones_disponibles = list(dict.fromkeys(MENCIONES_DOCENTE + opciones["menciones"] + ["Sin Mención"]))
+        ambientes_disponibles = list(dict.fromkeys(AMBIENTES + opciones["ambientes"]))
+
+        aviso = ft.Text(
+            "Agregue las materias del docente. Si una materia no aparece en el listado, escríbala para crearla.",
+            color=TL,
+            size=12,
         )
-        dd_ambiente = ddrop(
-            "Ambiente (opcional)",
-            [ft.dropdown.Option(a) for a in AMBIENTES],
-            value=None,
-            expand=True,
-        )
-        tf_materias = ft.TextField(
-            label="Materias que imparte (una por línea)",
-            multiline=True,
-            min_lines=3,
-            max_lines=6,
+
+        estado = ft.Container(
+            content=ft.Text("Complete los datos del docente y seleccione su disponibilidad.", color=TG, size=12),
+            bgcolor=alpha_col(BLUE, 0.1),
+            border=_ba(1, BOR),
             border_radius=10,
-            expand=True,
+            padding=_pa(12),
         )
-        celdas = {}
+
+        def codigo_editado(e):
+            valor = (e.control.value or "").strip().upper().replace(" ", "")
+            if valor != e.control.value:
+                e.control.value = valor
+                e.control.update()
+            if valor and valor not in codigos_existentes:
+                contenido = ft.Text(f"Código nuevo: '{valor}' será aceptado al guardar.", color=BLUE, size=12)
+                estado.bgcolor = alpha_col(BLUE, 0.1)
+                estado.border = _ba(1, alpha_col(BLUE, 0.5))
+            elif valor:
+                contenido = ft.Text(f"Código existente: '{valor}'.", color=TG, size=12)
+                estado.bgcolor = alpha_col(BLUE, 0.1)
+                estado.border = _ba(1, BOR)
+            else:
+                contenido = ft.Text("Seleccione un código existente o escriba uno nuevo.", color=TG, size=12)
+                estado.bgcolor = alpha_col(BLUE, 0.1)
+                estado.border = _ba(1, BOR)
+            estado.content = contenido
+            estado.update()
+
+        def solo_numeros(e):
+            valor = "".join(ch for ch in (e.control.value or "") if ch.isdigit())
+            if valor != e.control.value:
+                e.control.value = valor
+                e.control.update()
+
+        def seccion_editado(e):
+            valor = "".join(ch for ch in (e.control.value or "") if ch.isdigit())
+            if valor != e.control.value:
+                e.control.value = valor
+                e.control.update()
+            if valor and valor not in secciones_existentes:
+                contenido = ft.Text(f"Sección nueva: '{valor}' será aceptada al guardar.", color=BLUE, size=12)
+                estado.bgcolor = alpha_col(BLUE, 0.1)
+                estado.border = _ba(1, alpha_col(BLUE, 0.5))
+            elif valor:
+                contenido = ft.Text(f"Sección existente: '{valor}'.", color=TG, size=12)
+                estado.bgcolor = alpha_col(BLUE, 0.1)
+                estado.border = _ba(1, BOR)
+            else:
+                contenido = ft.Text("Seleccione una sección existente o escriba una nueva.", color=TG, size=12)
+                estado.bgcolor = alpha_col(BLUE, 0.1)
+                estado.border = _ba(1, BOR)
+            estado.content = contenido
+            estado.update()
+
+        materias_container = ft.Column([], spacing=10)
+        filas_materia = []
+
+        def eliminar_fila(fila):
+            if fila in filas_materia:
+                filas_materia.remove(fila)
+            if fila["root"] in materias_container.controls:
+                materias_container.controls.remove(fila["root"])
+            materias_container.update()
+
+        def agregar_fila_materia(valores=None):
+            valores = valores or {}
+            fila = {}
+            dd_materia = ddrop(
+                "Materia que imparte",
+                [ft.dropdown.Option(nombre) for nombre in nombres_disponibles],
+                value=valores.get("materia") or None,
+                expand=True,
+                editable=True,
+                enable_search=True,
+                enable_filter=True,
+            )
+            dd_ambiente = ddrop(
+                "Ambiente (opcional)",
+                [ft.dropdown.Option(a) for a in ambientes_disponibles],
+                value=valores.get("salon_preferido") or None,
+                width=180,
+            )
+            dd_carrera = ddrop(
+                "Carrera Universitaria",
+                [ft.dropdown.Option(c) for c in carreras_disponibles],
+                value=valores.get("carrera") or None,
+                expand=True,
+            )
+            dd_mencion = ddrop(
+                "Mención",
+                [ft.dropdown.Option(m) for m in menciones_disponibles],
+                value=valores.get("mencion") or None,
+                expand=True,
+            )
+            dd_codigo = ddrop(
+                "Código",
+                [ft.dropdown.Option(codigo) for codigo in codigos_disponibles],
+                value=valores.get("codigo") or None,
+                width=180,
+                editable=True,
+                enable_search=True,
+                enable_filter=True,
+                input_filter=ft.InputFilter(regex_string=r"[A-Za-z0-9]", allow=True, replacement_string=""),
+                capitalization=ft.TextCapitalization.CHARACTERS,
+                on_change=codigo_editado,
+            )
+            dd_ciclo = ddrop(
+                "Ciclo",
+                [ft.dropdown.Option(c) for c in CICLOS_ACADEMICOS],
+                value=valores.get("ciclo") or None,
+                width=180,
+            )
+            dd_seccion = ddrop(
+                "Sección",
+                [ft.dropdown.Option(seccion) for seccion in secciones_disponibles],
+                value=valores.get("seccion") or None,
+                width=150,
+                editable=True,
+                enable_search=True,
+                enable_filter=True,
+                input_filter=ft.InputFilter(regex_string=r"[0-9]", allow=True, replacement_string=""),
+                on_change=seccion_editado,
+            )
+            tf_uc = campo(
+                "UC",
+                value=str(valores.get("unidad_credito", "") or ""),
+                width=75,
+                on_change=solo_numeros,
+            )
+            tf_compartidos = campo(
+                "Compartidos con otras materias y secciones",
+                value=valores.get("compartidos", ""),
+                expand=True,
+            )
+            btn_eliminar = ft.IconButton(
+                icon=ft.Icons.DELETE_OUTLINE_ROUNDED,
+                icon_color=RED,
+                tooltip="Eliminar esta materia",
+                on_click=lambda _: eliminar_fila(fila),
+            )
+            fila.update({
+                "tf_materia": dd_materia,
+                "dd_ambiente": dd_ambiente,
+                "dd_carrera": dd_carrera,
+                "dd_mencion": dd_mencion,
+                "dd_codigo": dd_codigo,
+                "dd_ciclo": dd_ciclo,
+                "dd_seccion": dd_seccion,
+                "tf_unidad_credito": tf_uc,
+                "tf_compartidos": tf_compartidos,
+            })
+            fila["root"] = ft.Container(
+                content=ft.Column([
+                    ft.Row([dd_materia, dd_ambiente, btn_eliminar], spacing=8),
+                    ft.Row([dd_carrera, dd_mencion], spacing=8),
+                    ft.Row([dd_codigo, dd_ciclo, dd_seccion, tf_uc], spacing=8),
+                    tf_compartidos,
+                ], spacing=8),
+                bgcolor=BG_IN,
+                border=_ba(1, BOR),
+                border_radius=10,
+                padding=_pa(10),
+            )
+            filas_materia.append(fila)
+            materias_container.controls.append(fila["root"])
+
+        agregar_fila_materia()
+        btn_agregar = ft.OutlinedButton(
+            "Agregar materia",
+            icon=ft.Icons.ADD_ROUNDED,
+            on_click=lambda _: (agregar_fila_materia(), materias_container.update()),
+        )
+
         encabezado_horas = ft.Row(
             [
                 ft.Container(width=94),
@@ -2528,6 +2904,7 @@ class App:
             spacing=2,
             scroll=ft.ScrollMode.AUTO,
         )
+        celdas = {}
         filas_horario = [encabezado_horas]
         for dia in DIAS:
             checks = []
@@ -2548,30 +2925,45 @@ class App:
                     scroll=ft.ScrollMode.AUTO,
                 )
             )
-        estado = ft.Container(
-            content=ft.Text("Complete los datos del docente y seleccione su disponibilidad.", color=TG, size=12),
-            bgcolor=alpha_col(BLUE, 0.1),
-            border=_ba(1, BOR),
-            border_radius=10,
-            padding=_pa(12),
-        )
 
         def guardar(e=None):
-            materias = [m.strip() for m in (tf_materias.value or "").splitlines() if m.strip()]
             disponibilidades = [
                 (DIAS_ORDEN[DIAS.index(dia)], franjas[indice][0], franjas[indice][1])
                 for (dia, indice), check in celdas.items()
                 if check.value
             ]
+
+            materias_guardar = []
+            for fila in filas_materia:
+                datos = {
+                    "materia": (fila["tf_materia"].value or "").strip().upper(),
+                    "carrera": fila["dd_carrera"].value,
+                    "mencion": fila["dd_mencion"].value,
+                    "ambiente": fila["dd_ambiente"].value,
+                    "codigo": (fila["dd_codigo"].value or "").strip().upper(),
+                    "ciclo": fila["dd_ciclo"].value,
+                    "seccion": (fila["dd_seccion"].value or "").strip(),
+                    "unidad_credito": (fila["tf_unidad_credito"].value or "").strip(),
+                    "compartidos": (fila["tf_compartidos"].value or "").strip(),
+                }
+                if any(datos[k] for k in datos):
+                    if datos["materia"] or datos["carrera"] or datos["codigo"]:
+                        materias_guardar.append(datos)
+
+            if not materias_guardar:
+                estado.content = ft.Text("Agregue al menos una materia.", color=RED, size=12)
+                estado.bgcolor = alpha_col(RED, 0.14)
+                estado.border = _ba(1, alpha_col(RED, 0.5))
+                estado.update()
+                return
+
             try:
                 resultado = registrar_ficha_docente({
                     "docente": tf_docente.value,
                     "cedula": tf_cedula.value,
                     "correo": tf_correo.value,
                     "condicion": dd_condicion.value,
-                    "carrera": dd_carrera.value,
-                    "ambiente": dd_ambiente.value,
-                    "materias": materias,
+                    "materias": materias_guardar,
                     "disponibilidades": disponibilidades,
                 })
             except Exception as ex:
@@ -2622,6 +3014,7 @@ class App:
             self._sb_refresh()
             self._mc_refresh()
             self.page.update()
+            self._notificar_conflictos_si_hay()
 
         btn_guardar = ft.ElevatedButton(
             "Guardar ficha y generar horarios",
@@ -2649,10 +3042,11 @@ class App:
                     ft.Row([tf_docente, tf_cedula], spacing=12),
                     ft.Container(height=8),
                     ft.Row([tf_correo, dd_condicion], spacing=12),
-                    ft.Container(height=8),
-                    ft.Row([dd_carrera, dd_ambiente], spacing=12),
                     ft.Container(height=14),
-                    tf_materias,
+                    ft.Text("Materias / Cargas académicas", color=TW, size=15, weight=ft.FontWeight.W_600),
+                    aviso,
+                    materias_container,
+                    btn_agregar,
                     ft.Container(height=18),
                     ft.Text("Disponibilidad semanal", color=TW, size=15, weight=ft.FontWeight.W_600),
                     ft.Text("Marque las franjas en las que el docente puede impartir clases.", color=TG, size=11),
@@ -2888,15 +3282,24 @@ class App:
             ink=True,
         )
 
+        conflictos = contar_conflictos_horarios(self._all)
+        banner_color = GRN if conflictos == 0 else RED
+        banner_icono = ft.Icons.VERIFIED_ROUNDED if conflictos == 0 else ft.Icons.WARNING_ROUNDED
+        banner_titulo = "Sistema Sin Conflictos de Horario" if conflictos == 0 else "Se encontraron conflictos de horario"
+        banner_sub = (
+            "Todos los ambientes y docentes asignados sin superposicion."
+            if conflictos == 0
+            else f"Hay {conflictos} superposicion(es) de docente o ambiente que deben revisarse."
+        )
         banner = ft.Container(
             content=ft.Row([
-                ft.Icon(ft.Icons.VERIFIED_ROUNDED, color=GRN, size=22),
+                ft.Icon(banner_icono, color=banner_color, size=22),
                 ft.Column([
-                    ft.Text("Sistema Sin Conflictos de Horario", color=GRN, size=13, weight=ft.FontWeight.W_700),
-                    ft.Text("Todos los ambientes y docentes asignados sin superposicion.", color=TG, size=11),
+                    ft.Text(banner_titulo, color=banner_color, size=13, weight=ft.FontWeight.W_700),
+                    ft.Text(banner_sub, color=TG, size=11),
                 ], spacing=2),
                 ft.Container(expand=True),
-                badge("0 CONFLICTOS", GRN),
+                badge(f"{conflictos} CONFLICTOS", banner_color),
             ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             bgcolor=alpha_col(GRN, 0.15), border_radius=12,
             padding=_pa(16), border=_ba(1, alpha_col(GRN, 0.4)),
@@ -3157,6 +3560,9 @@ class App:
             [ft.dropdown.Option(d) for d in docs_ordenados],
             value=self.docente_calendario_sel if self.docente_calendario_sel in docs_ordenados else (docs_ordenados[0] if docs_ordenados else None),
             expand=True,
+            editable=False,
+            enable_search=True,
+            enable_filter=True,
         )
 
         cont_calendario = ft.Column(spacing=4)
@@ -3651,91 +4057,316 @@ class App:
         ], spacing=0)
 
     def _abrir_dialogo_editar_docente(self, docente: str, al_actualizar=None):
-        """Permite modificar los datos de un docente o eliminarlo individualmente."""
+        """Permite modificar todos los datos del docente y sus cargas académicas."""
         info = obtener_info_profesores_dict().get(str(docente).strip().upper(), {})
-        materias_actuales = obtener_materias_profesor(docente)
+        cargas_actuales = obtener_cargas_docente(docente)
+        opciones = obtener_opciones_carga()
+        codigos_disponibles = opciones["codigos"]
+        secciones_disponibles = opciones["secciones"]
+        carreras_disponibles = list(dict.fromkeys(opciones["carreras"] + [c["nombre"] for c in CARRERAS.values()]))
+        menciones_disponibles = list(dict.fromkeys(MENCIONES_DOCENTE + opciones["menciones"] + ["Sin Mención"]))
+        ambientes_disponibles = list(dict.fromkeys(AMBIENTES + opciones["ambientes"]))
+
+        franjas = [
+            ("07:00", "07:45"), ("07:45", "08:30"), ("08:30", "09:15"),
+            ("09:20", "10:05"), ("10:05", "10:50"), ("10:50", "11:35"),
+            ("11:35", "12:15"), ("12:30", "13:15"), ("13:15", "13:55"),
+            ("14:10", "14:55"), ("14:55", "15:35"), ("15:40", "16:25"),
+            ("16:25", "17:05"), ("17:10", "17:45"), ("17:45", "18:25"),
+            ("18:25", "19:10"), ("19:10", "19:55"), ("19:55", "20:40"), ("20:40", "21:25"),
+        ]
+        conn_disp = get_connection()
+        cur_disp = conn_disp.cursor()
+        disponibilidades_actuales = {
+            (row["dia"], row["hora_inicio"], row["hora_fin"])
+            for row in cur_disp.execute(
+                """SELECT d.dia, d.hora_inicio, d.hora_fin
+                   FROM disponibilidades d
+                   JOIN profesores p ON p.id = d.profesor_id
+                   WHERE LOWER(p.nombre) = LOWER(?)""",
+                (docente,),
+            ).fetchall()
+        }
+        conn_disp.close()
+        disponibilidades_marcas_inicial = {
+            (dia, indice)
+            for dia, inicio, fin in disponibilidades_actuales
+            for indice, (franja_inicio, franja_fin) in enumerate(franjas)
+            if max(inicio, franja_inicio) < min(fin, franja_fin)
+        }
+
+        def solo_alfanumerico(e):
+            valor = "".join(ch for ch in (e.control.value or "") if ch.isalnum()).upper()
+            if valor != e.control.value:
+                e.control.value = valor
+                e.control.update()
+
+        def solo_digitos(e):
+            valor = "".join(ch for ch in (e.control.value or "") if ch.isdigit())
+            if valor != e.control.value:
+                e.control.value = valor
+                e.control.update()
+
         tf_nombre = campo("Nombre completo", value=docente, expand=True)
         tf_cedula = campo("Cédula", value=info.get("cedula", ""), width=190)
         tf_email = campo("Correo electrónico", value=info.get("email", ""), expand=True)
-        tf_materias = campo(
-            "Materias que dicta (una materia por línea)",
-            value="\n".join(materias_actuales),
-            multiline=True,
-            min_lines=3,
-            max_lines=7,
-            expand=True,
-        )
         dd_cond = ddrop(
             "Condición",
             [
-                ft.dropdown.Option("Contratado/a"),
-                ft.dropdown.Option("Fijo/a"),
-                ft.dropdown.Option("Jubilado/a"),
-                ft.dropdown.Option("Invitado/a"),
+                ft.dropdown.Option(v)
+                for v in dict.fromkeys([
+                    "Contratado/a", "Ordinario/a", "Fijo/a", "Jubilado/a", "Invitado/a", "Otro",
+                    info.get("condicion", "Contratado/a") or "Contratado/a",
+                ])
             ],
             value=info.get("condicion", "Contratado/a") or "Contratado/a",
             width=210,
         )
+
+        aviso = ft.Text(
+            "Agregue o edite cada materia. Los códigos y secciones nuevos se aceptarán al guardar.",
+            color=TL,
+            size=11,
+        )
         total_clases = sum(1 for x in self._all if x.get("docente") == docente)
+        materias_container = ft.Column([], spacing=10)
+        filas_materia = []
+
+        def eliminar_fila(fila):
+            if fila in filas_materia:
+                filas_materia.remove(fila)
+            if fila["root"] in materias_container.controls:
+                materias_container.controls.remove(fila["root"])
+            materias_container.update()
+
+        def agregar_fila(valores=None):
+            valores = valores or {}
+            fila = {}
+            tf_materia = campo("Materia", value=valores.get("materia", ""), expand=True)
+            dd_carrera = ddrop(
+                "Carrera",
+                [ft.dropdown.Option(c) for c in carreras_disponibles],
+                value=valores.get("carrera") or None,
+                expand=True,
+            )
+            dd_mencion = ddrop(
+                "Mención",
+                [ft.dropdown.Option(m) for m in menciones_disponibles],
+                value=valores.get("mencion") or None,
+                expand=True,
+            )
+            dd_ambiente = ddrop(
+                "Ambiente",
+                [ft.dropdown.Option(a) for a in ambientes_disponibles],
+                value=valores.get("salon_preferido") or None,
+                width=180,
+            )
+            dd_codigo = ddrop(
+                "Código",
+                [ft.dropdown.Option(c) for c in codigos_disponibles],
+                value=valores.get("codigo") or None,
+                width=180,
+                editable=True,
+                enable_search=True,
+                enable_filter=True,
+                input_filter=ft.InputFilter(regex_string=r"[A-Za-z0-9]", allow=True, replacement_string=""),
+                capitalization=ft.TextCapitalization.CHARACTERS,
+                on_change=solo_alfanumerico,
+            )
+            ciclo_opciones = list(dict.fromkeys(CICLOS_ACADEMICOS + ([valores.get("ciclo")] if valores.get("ciclo") else [])))
+            dd_ciclo = ddrop(
+                "Ciclo",
+                [ft.dropdown.Option(c) for c in ciclo_opciones],
+                value=valores.get("ciclo") or None,
+                width=165,
+            )
+            dd_seccion = ddrop(
+                "Sección",
+                [ft.dropdown.Option(s) for s in secciones_disponibles],
+                value=str(valores.get("seccion", "") or None),
+                width=140,
+                editable=True,
+                enable_search=True,
+                enable_filter=True,
+                input_filter=ft.InputFilter(regex_string=r"[0-9]", allow=True, replacement_string=""),
+                on_change=solo_digitos,
+            )
+            tf_uc = campo(
+                "UC",
+                value=str(valores.get("unidad_credito", "") or ""),
+                width=75,
+                on_change=solo_digitos,
+            )
+            tf_compartidos = campo(
+                "Compartidos con otras materias y secciones",
+                value=valores.get("compartidos", ""),
+                expand=True,
+            )
+            btn_eliminar = ft.IconButton(
+                icon=ft.Icons.DELETE_OUTLINE_ROUNDED,
+                icon_color=RED,
+                tooltip="Eliminar esta materia",
+                on_click=lambda _: eliminar_fila(fila),
+            )
+            fila.update({
+                "carga_id": valores.get("carga_id"),
+                "tf_materia": tf_materia,
+                "dd_carrera": dd_carrera,
+                "dd_mencion": dd_mencion,
+                "dd_ambiente": dd_ambiente,
+                "dd_codigo": dd_codigo,
+                "dd_ciclo": dd_ciclo,
+                "dd_seccion": dd_seccion,
+                "tf_unidad_credito": tf_uc,
+                "tf_compartidos": tf_compartidos,
+            })
+            fila["root"] = ft.Container(
+                content=ft.Column([
+                    ft.Row([tf_materia, dd_ambiente, btn_eliminar], spacing=8),
+                    ft.Row([dd_carrera, dd_mencion], spacing=8),
+                    ft.Row([dd_codigo, dd_ciclo, dd_seccion, tf_uc], spacing=8),
+                    tf_compartidos,
+                ], spacing=8),
+                bgcolor=BG_IN,
+                border=_ba(1, BOR),
+                border_radius=10,
+                padding=_pa(10),
+            )
+            filas_materia.append(fila)
+            materias_container.controls.append(fila["root"])
+
+        for carga in cargas_actuales:
+            agregar_fila(carga)
+        if not cargas_actuales:
+            agregar_fila()
+        btn_agregar = ft.OutlinedButton(
+            "Agregar materia",
+            icon=ft.Icons.ADD_ROUNDED,
+            on_click=lambda _: (agregar_fila(), materias_container.update()),
+        )
+
+        encabezado_horas = ft.Row(
+            [
+                ft.Container(width=94),
+                *[
+                    ft.Container(
+                        content=ft.Text(f"{inicio}\n{fin}", size=9, color=TG, text_align=ft.TextAlign.CENTER),
+                        width=68,
+                        alignment=ft.alignment.center,
+                    )
+                    for inicio, fin in franjas
+                ],
+            ],
+            spacing=2,
+            scroll=ft.ScrollMode.AUTO,
+        )
+        celdas = {}
+        filas_horario = [encabezado_horas]
+        for dia in DIAS_ORDEN:
+            checks = []
+            for indice, franja in enumerate(franjas):
+                check = ft.Checkbox(value=(dia, indice) in disponibilidades_marcas_inicial, scale=0.75)
+                celdas[(dia, indice)] = check
+                checks.append(ft.Container(content=check, width=68, alignment=ft.alignment.center))
+            filas_horario.append(
+                ft.Row(
+                    [
+                        ft.Container(
+                            content=ft.Text(dia, size=11, color=TW, weight=ft.FontWeight.W_600),
+                            width=94,
+                        ),
+                        *checks,
+                    ],
+                    spacing=2,
+                    scroll=ft.ScrollMode.AUTO,
+                )
+            )
 
         def cerrar(e=None):
             self._cerrar_modal(dlg)
 
         def guardar(e=None):
-            nombre_nuevo = (tf_nombre.value or "").strip()
+            nombre_nuevo = (tf_nombre.value or "").strip().upper()
             if not nombre_nuevo:
                 tf_nombre.error_text = "El nombre del docente es obligatorio"
                 tf_nombre.update()
                 return
-            materias_nuevas = [
-                materia.strip()
-                for materia in (tf_materias.value or "").splitlines()
-                if materia.strip()
-            ]
-            if not materias_nuevas:
-                tf_materias.error_text = "Debe indicar al menos una materia."
-                tf_materias.update()
+
+            materias_guardar = []
+            for fila in filas_materia:
+                datos = {
+                    "carga_id": fila.get("carga_id"),
+                    "materia": (fila["tf_materia"].value or "").strip(),
+                    "carrera": fila["dd_carrera"].value,
+                    "mencion": fila["dd_mencion"].value,
+                    "ambiente": fila["dd_ambiente"].value,
+                    "codigo": (fila["dd_codigo"].value or "").strip().upper(),
+                    "ciclo": fila["dd_ciclo"].value,
+                    "seccion": (fila["dd_seccion"].value or "").strip(),
+                    "unidad_credito": (fila["tf_unidad_credito"].value or "").strip(),
+                    "compartidos": (fila["tf_compartidos"].value or "").strip(),
+                }
+                if datos["carga_id"] or any(datos[k] for k in (
+                    "materia", "carrera", "mencion", "ambiente", "codigo", "ciclo",
+                    "seccion", "unidad_credito", "compartidos",
+                )):
+                    materias_guardar.append(datos)
+
+            if not any(m.get("materia") and m.get("carrera") for m in materias_guardar):
+                aviso.value = "Debe indicar al menos una materia y su carrera."
+                aviso.color = RED
+                aviso.update()
                 return
 
-            ok = actualizar_profesor(
-                docente,
-                nombre_nuevo.upper(),
-                cedula=(tf_cedula.value or "").strip(),
-                email=(tf_email.value or "").strip(),
-                condicion=dd_cond.value or "Contratado/a",
-                materias=materias_nuevas,
-            )
+            marcas_actuales = {
+                (dia, indice)
+                for (dia, indice), check in celdas.items()
+                if check.value
+            }
+            if marcas_actuales == disponibilidades_marcas_inicial:
+                disponibilidades = None
+            else:
+                disponibilidades = [
+                    (dia, franjas[indice][0], franjas[indice][1])
+                    for dia, indice in marcas_actuales
+                ]
+
+            datos_guardar = {
+                "nuevo_nombre": nombre_nuevo,
+                "cedula": (tf_cedula.value or "").strip(),
+                "email": (tf_email.value or "").strip(),
+                "condicion": dd_cond.value or "Contratado/a",
+                "mencion": "",
+                "disponibilidades": disponibilidades,
+                "materias": materias_guardar,
+            }
+            try:
+                ok, mensaje = actualizar_ficha_docente_completa(docente, datos_guardar)
+            except Exception as ex:
+                aviso.value = f"No se pudo guardar la ficha: {ex}"
+                aviso.color = RED
+                aviso.update()
+                return
             if not ok:
-                tf_nombre.error_text = "Verifique que el nombre del docente no esté repetido."
-                tf_materias.error_text = (
-                    "No se pudo guardar. Revise que las materias no sean ambiguas y que "
-                    "el docente tenga una carrera registrada para las materias nuevas."
-                )
-                tf_materias.update()
-                tf_nombre.update()
+                aviso.value = mensaje
+                aviso.color = RED
+                aviso.update()
                 return
 
             self._cerrar_modal(dlg)
-            res_sched = generar_horarios_automaticos()
-            self.docente_calendario_sel = nombre_nuevo.upper()
+            self.docente_calendario_sel = nombre_nuevo
             self.motor.limpiar_memoria()
             self._all = self.motor.sincronizar_desde_sqlite()
             recargar_docentes_desde_bd()
             if self.docente_calendario_sel not in DOCENTES:
                 self.docente_calendario_sel = DOCENTES[0] if DOCENTES else ""
-            self.ultimo_mensaje = f"Datos del docente '{nombre_nuevo.upper()}' actualizados correctamente."
+            self.ultimo_mensaje = f"Datos del docente '{nombre_nuevo}' actualizados correctamente."
             self._sb_refresh()
             if al_actualizar:
                 al_actualizar()
             else:
                 self._refrescar_vista_actual()
-            if res_sched.get("pendientes"):
-                self._mostrar_notificacion(
-                    f"Docente actualizado; {res_sched['pendientes']} bloques quedaron pendientes por conflictos o disponibilidad.",
-                    color=ORG,
-                )
-            else:
-                self._mostrar_notificacion(f"Docente '{nombre_nuevo.upper()}' actualizado.", color=GRN)
+            self._mostrar_notificacion(f"Docente '{nombre_nuevo}' actualizado.", color=GRN)
 
         def abrir_confirmacion_eliminar(e=None):
             self._cerrar_modal(dlg)
@@ -3755,14 +4386,29 @@ class App:
                     tf_nombre,
                     ft.Row([tf_cedula, dd_cond], spacing=10),
                     tf_email,
-                    tf_materias,
+                    ft.Divider(height=8),
+                    ft.Text("Materias / Cargas académicas", color=TW, size=14, weight=ft.FontWeight.W_700),
+                    aviso,
+                    materias_container,
+                    btn_agregar,
+                    ft.Divider(height=8),
+                    ft.Text("Disponibilidad semanal", color=TW, size=14, weight=ft.FontWeight.W_700),
+                    ft.Text("Marque las franjas en las que el docente puede impartir clases.", color=TG, size=11),
+                    ft.Container(
+                        content=ft.Column(filas_horario, spacing=4, scroll=ft.ScrollMode.AUTO),
+                        bgcolor=BG_P,
+                        border=_ba(1, BOR),
+                        border_radius=10,
+                        padding=_pa(10),
+                    ),
                     ft.Container(height=4),
                     ft.Text(
                         f"Este docente tiene {total_clases} clase(s) registrada(s).",
                         size=11, color=TG, italic=True,
                     ),
-                ], spacing=8, tight=True),
-                width=520,
+                ], spacing=8, scroll=ft.ScrollMode.AUTO),
+                width=980,
+                height=650,
             ),
             actions=[
                 ft.TextButton("Cancelar", on_click=cerrar),
@@ -3784,7 +4430,6 @@ class App:
             actions_alignment=ft.MainAxisAlignment.END,
         )
         self._abrir_modal(dlg)
-
     def _dialogo_eliminar_docente(self, docente: str, total_clases: int = 0, al_actualizar=None):
         """Confirma y elimina un docente individualmente."""
         def cerrar(e=None):
