@@ -4,6 +4,104 @@ import sys
 import re
 import unicodedata
 
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+except ImportError:
+    psycopg = None
+    dict_row = None
+
+
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+
+
+class PostgresRow(dict):
+    def __init__(self, values):
+        super().__init__(values)
+        self._columns = tuple(values)
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            key = self._columns[key]
+        return super().__getitem__(key)
+
+
+def _postgres_sql(sql):
+    insert_ignore = bool(
+        re.match(r"^\s*INSERT\s+OR\s+IGNORE\s+INTO\b", sql, flags=re.IGNORECASE)
+    )
+    sql = re.sub(r"\bINTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT\b", "SERIAL PRIMARY KEY", sql, flags=re.IGNORECASE)
+    sql = re.sub(r"\s+COLLATE\s+NOCASE\b", "", sql, flags=re.IGNORECASE)
+    sql = re.sub(r"\?", "%s", sql)
+    sql = re.sub(
+        r"^\s*INSERT\s+OR\s+IGNORE\s+INTO\b",
+        "INSERT INTO",
+        sql,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    if insert_ignore:
+        sql = re.sub(r";?\s*$", " ON CONFLICT DO NOTHING", sql)
+    sql = re.sub(
+        r"^(ALTER\s+TABLE\s+\S+\s+ADD\s+COLUMN)\s+",
+        r"\1 IF NOT EXISTS ",
+        sql,
+        flags=re.IGNORECASE,
+    )
+    return sql
+
+
+class PostgresCursor:
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    def execute(self, sql, params=()):
+        self._cursor.execute(_postgres_sql(sql), params)
+        return self
+
+    def executemany(self, sql, seq_of_params):
+        self._cursor.executemany(_postgres_sql(sql), seq_of_params)
+        return self
+
+    def executescript(self, script):
+        for statement in script.split(";"):
+            if statement.strip():
+                self.execute(statement)
+        return self
+
+    def fetchone(self):
+        row = self._cursor.fetchone()
+        return PostgresRow(row) if row is not None else None
+
+    def fetchall(self):
+        return [PostgresRow(row) for row in self._cursor.fetchall()]
+
+    @property
+    def rowcount(self):
+        return self._cursor.rowcount
+
+
+class PostgresConnection:
+    def __init__(self, dsn):
+        if psycopg is None:
+            raise RuntimeError(
+                "PostgreSQL fue configurado pero falta psycopg. "
+                "Instale las dependencias de requirements-server.txt."
+            )
+        self._connection = psycopg.connect(dsn, row_factory=dict_row)
+
+    def cursor(self):
+        return PostgresCursor(self._connection.cursor())
+
+    def commit(self):
+        self._connection.commit()
+
+    def rollback(self):
+        self._connection.rollback()
+
+    def close(self):
+        self._connection.close()
+
 
 def _normalizar_espacios(valor):
     try:
@@ -49,7 +147,7 @@ def obtener_ruta_base():
 
 
 BASE_DIR = obtener_ruta_base()
-DB_PATH = os.path.join(BASE_DIR, "universidad_horarios.db")
+DB_PATH = os.environ.get("DATABASE_PATH", os.path.join(BASE_DIR, "universidad_horarios.db"))
 
 DIAS_ORDEN = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
 BLOQUES_HORARIOS = [
@@ -120,7 +218,20 @@ def _guardar_config(cursor, clave, valor):
     )
 
 
+def _asegurar_columna(cursor, tabla, columna, definicion):
+    try:
+        cursor.execute(f"ALTER TABLE {tabla} ADD COLUMN {columna} {definicion}")
+    except sqlite3.OperationalError as exc:
+        if "duplicate column name" not in str(exc).casefold():
+            raise
+
+
 def get_connection():
+    if DATABASE_URL:
+        if not DATABASE_URL.startswith(("postgresql://", "postgres://")):
+            raise ValueError("DATABASE_URL debe usar el esquema postgresql:// o postgres://.")
+        return PostgresConnection(DATABASE_URL)
+
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
@@ -197,18 +308,17 @@ def _migrar_salones(cursor):
                 nuevo = nuevos[indice]
                 if viejo == nuevo or nuevo in existentes:
                     continue
-                try:
-                    cursor.execute(
-                        "UPDATE salones SET codigo = ? WHERE UPPER(codigo) = ?",
-                        (nuevo, viejo),
-                    )
+                cursor.execute(
+                    "UPDATE salones SET codigo = ? WHERE UPPER(codigo) = ? "
+                    "AND NOT EXISTS (SELECT 1 FROM salones WHERE UPPER(codigo) = UPPER(?))",
+                    (nuevo, viejo, nuevo),
+                )
+                if cursor.rowcount:
                     cursor.execute(
                         "UPDATE carga_academica SET salon_preferido = ? "
                         "WHERE UPPER(TRIM(salon_preferido)) = ?",
                         (nuevo, viejo),
                     )
-                except sqlite3.IntegrityError:
-                    pass
 
         existentes = {
             row["codigo"].upper()
@@ -325,35 +435,12 @@ def init_db():
     CREATE INDEX IF NOT EXISTS idx_materias_carrera ON materias(carrera_id);
     """);
 
-    try:
-        cursor.execute("ALTER TABLE profesores ADD COLUMN condicion TEXT DEFAULT 'Contratado/a'")
-    except Exception:
-        pass
-
-    try:
-        cursor.execute("ALTER TABLE salones ADD COLUMN es_camillas INTEGER DEFAULT 0")
-    except Exception:
-        pass
-
-    try:
-        cursor.execute("ALTER TABLE profesores ADD COLUMN mencion TEXT DEFAULT ''")
-    except Exception:
-        pass
-
-    try:
-        cursor.execute("ALTER TABLE materias ADD COLUMN unidad_credito INTEGER DEFAULT 0")
-    except Exception:
-        pass
-
-    try:
-        cursor.execute("ALTER TABLE materias ADD COLUMN mencion TEXT DEFAULT ''")
-    except Exception:
-        pass
-
-    try:
-        cursor.execute("ALTER TABLE carga_academica ADD COLUMN compartidos TEXT DEFAULT ''")
-    except Exception:
-        pass
+    _asegurar_columna(cursor, "profesores", "condicion", "TEXT DEFAULT 'Contratado/a'")
+    _asegurar_columna(cursor, "salones", "es_camillas", "INTEGER DEFAULT 0")
+    _asegurar_columna(cursor, "profesores", "mencion", "TEXT DEFAULT ''")
+    _asegurar_columna(cursor, "materias", "unidad_credito", "INTEGER DEFAULT 0")
+    _asegurar_columna(cursor, "materias", "mencion", "TEXT DEFAULT ''")
+    _asegurar_columna(cursor, "carga_academica", "compartidos", "TEXT DEFAULT ''")
 
     # Crear/migrar el inventario oficial de ambientes.
     _migrar_salones(cursor)
@@ -384,8 +471,12 @@ def get_or_create_facultad(cursor, nombre):
     row = cursor.fetchone()
     if row:
         return row["id"]
-    cursor.execute("INSERT INTO facultades (nombre) VALUES (?)", (nombre,))
-    return cursor.lastrowid
+    cursor.execute(
+        "INSERT INTO facultades (nombre) VALUES (?) ON CONFLICT(nombre) DO NOTHING",
+        (nombre,),
+    )
+    cursor.execute("SELECT id FROM facultades WHERE LOWER(nombre) = LOWER(?)", (nombre,))
+    return cursor.fetchone()["id"]
 
 
 def get_or_create_carrera(cursor, nombre, facultad_id):
@@ -398,10 +489,15 @@ def get_or_create_carrera(cursor, nombre, facultad_id):
     if row:
         return row["id"]
     cursor.execute(
-        "INSERT INTO carreras (nombre, facultad_id) VALUES (?, ?)",
-        (nombre, facultad_id)
+        "INSERT INTO carreras (nombre, facultad_id) VALUES (?, ?) "
+        "ON CONFLICT(nombre, facultad_id) DO NOTHING",
+        (nombre, facultad_id),
     )
-    return cursor.lastrowid
+    cursor.execute(
+        "SELECT id FROM carreras WHERE LOWER(nombre) = LOWER(?) AND facultad_id = ?",
+        (nombre, facultad_id),
+    )
+    return cursor.fetchone()["id"]
 
 
 def get_or_create_profesor(cursor, nombre, cedula="", email="", condicion="Contratado/a", mencion=""):
@@ -409,23 +505,25 @@ def get_or_create_profesor(cursor, nombre, cedula="", email="", condicion="Contr
     mencion = str(mencion or "").strip()
     cursor.execute("SELECT id FROM profesores WHERE LOWER(nombre) = LOWER(?)", (nombre,))
     row = cursor.fetchone()
-    if row:
-        if cedula or email or condicion or mencion:
-            cursor.execute(
-                """UPDATE profesores 
-                   SET cedula = COALESCE(NULLIF(?, ''), cedula), 
-                       email = COALESCE(NULLIF(?, ''), email),
-                       condicion = COALESCE(NULLIF(?, ''), condicion),
-                       mencion = COALESCE(NULLIF(?, ''), mencion)
-                   WHERE id = ?""",
-                (cedula, email, condicion, mencion, row["id"])
-            )
-        return row["id"]
-    cursor.execute(
-        "INSERT INTO profesores (nombre, cedula, email, condicion, mencion) VALUES (?, ?, ?, ?, ?)",
-        (nombre, cedula, email, condicion, mencion)
-    )
-    return cursor.lastrowid
+    if not row:
+        cursor.execute(
+            "INSERT INTO profesores (nombre, cedula, email, condicion, mencion) "
+            "VALUES (?, ?, ?, ?, ?) ON CONFLICT(nombre) DO NOTHING",
+            (nombre, cedula, email, condicion, mencion),
+        )
+        cursor.execute("SELECT id FROM profesores WHERE LOWER(nombre) = LOWER(?)", (nombre,))
+        row = cursor.fetchone()
+    if cedula or email or condicion or mencion:
+        cursor.execute(
+            """UPDATE profesores
+               SET cedula = COALESCE(NULLIF(?, ''), cedula),
+                   email = COALESCE(NULLIF(?, ''), email),
+                   condicion = COALESCE(NULLIF(?, ''), condicion),
+                   mencion = COALESCE(NULLIF(?, ''), mencion)
+               WHERE id = ?""",
+            (cedula, email, condicion, mencion, row["id"]),
+        )
+    return row["id"]
 
 
 def get_or_create_materia(cursor, nombre, carrera_id, codigo="", semestre="1er Semestre"):
@@ -438,10 +536,15 @@ def get_or_create_materia(cursor, nombre, carrera_id, codigo="", semestre="1er S
     if row:
         return row["id"]
     cursor.execute(
-        "INSERT INTO materias (nombre, codigo, carrera_id, semestre) VALUES (?, ?, ?, ?)",
-        (nombre, codigo, carrera_id, semestre)
+        "INSERT INTO materias (nombre, codigo, carrera_id, semestre) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(nombre, carrera_id) DO NOTHING",
+        (nombre, codigo, carrera_id, semestre),
     )
-    return cursor.lastrowid
+    cursor.execute(
+        "SELECT id FROM materias WHERE LOWER(nombre) = LOWER(?) AND carrera_id = ?",
+        (nombre, carrera_id),
+    )
+    return cursor.fetchone()["id"]
 
 
 def get_or_create_salon(cursor, codigo, capacidad=CAPACIDAD_DEFECTO, edificio="Edificio Principal"):
@@ -451,10 +554,12 @@ def get_or_create_salon(cursor, codigo, capacidad=CAPACIDAD_DEFECTO, edificio="E
     if row:
         return row["id"]
     cursor.execute(
-        "INSERT INTO salones (codigo, capacidad, edificio) VALUES (?, ?, ?)",
-        (codigo, capacidad, edificio)
+        "INSERT INTO salones (codigo, capacidad, edificio) VALUES (?, ?, ?) "
+        "ON CONFLICT(codigo) DO NOTHING",
+        (codigo, capacidad, edificio),
     )
-    return cursor.lastrowid
+    cursor.execute("SELECT id FROM salones WHERE LOWER(codigo) = LOWER(?)", (codigo,))
+    return cursor.fetchone()["id"]
 
 
 def registrar_ficha_docente(datos):

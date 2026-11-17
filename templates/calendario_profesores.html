@@ -3,9 +3,10 @@
 
 <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
     <div>
-        <h4 class="fw-bold mb-1 text-primary"><i class="bi bi-calendar3-week me-2"></i>2) Horario Tipo Calendario de Cada Profesor</h4>
+        <div class="text-primary small fw-bold text-uppercase mb-1">Directorio académico</div>
+        <h2 class="fw-bold mb-1">Gestión de Docentes</h2>
         <p class="text-muted small mb-0">
-            Visualiza la grilla semanal de cada profesor con todas las materias y carreras que dicta, o muéstralos todos a la vez.
+            Consulta la información disponible y los horarios semanales de cada docente.
         </p>
     </div>
     <div class="d-flex gap-2">
@@ -22,6 +23,11 @@
             <i class="bi bi-printer-fill me-1"></i> Imprimir Horario (Elegir Todos o 1 Profesor)
         </button>
     </div>
+</div>
+
+<div class="row g-3 mb-4">
+    <div class="col-6 col-lg-3"><div class="card card-stat bg-white p-3"><div class="text-muted small fw-semibold">Docentes registrados</div><div class="fs-3 fw-bold text-primary">{{ profesores|length }}</div></div></div>
+    <div class="col-6 col-lg-3"><div class="card card-stat bg-white p-3"><div class="text-muted small fw-semibold">Con clases asignadas</div><div class="fs-3 fw-bold text-success">{{ profesores|selectattr('clases')|list|length }}</div></div></div>
 </div>
 
 <!-- Selector de Profesor -->
@@ -140,6 +146,31 @@
             </table>
         </div>
     </div>
+{% endif %}
+
+{% if profesores %}
+<section class="card card-panel mt-4 overflow-hidden">
+    <div class="card-header bg-white p-3">
+        <h5 class="fw-bold mb-0">Directorio de docentes</h5>
+        <p class="small text-muted mb-0">Selecciona un docente para abrir su calendario semanal.</p>
+    </div>
+    <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+            <thead class="table-light small text-uppercase"><tr><th>Docente</th><th>Cédula</th><th>Correo</th><th>Cursos</th><th></th></tr></thead>
+            <tbody>
+                {% for p in profesores %}
+                <tr>
+                    <td class="fw-semibold">{{ p.nombre }}</td>
+                    <td>{{ p.cedula or '—' }}</td>
+                    <td>{{ p.email or '—' }}</td>
+                    <td><span class="badge bg-primary-subtle text-primary">{{ p.clases }}</span></td>
+                    <td class="text-end"><a class="btn btn-outline-primary btn-sm" href="{{ url_for('calendario_profesores', profesor_id=p.id) }}">Ver horario</a></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
 {% endif %}
 
 {% endblock %}

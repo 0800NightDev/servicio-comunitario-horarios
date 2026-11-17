@@ -6,6 +6,7 @@ on:
     tags:
       - 'v*'
     branches:
+      - 'colision-horarios'
       - 'mejoras-layout'
       - 'main'
 
@@ -33,9 +34,9 @@ jobs:
         run: |
           pyinstaller --noconfirm --onedir --windowed `
             --name "SGHU_Universidad_Windows" `
-            --add-data "universidad_horarios.db;." `
             --add-data "src;src" `
             SGHU_Universidad.py
+          Copy-Item iniciar_sistema.bat dist/SGHU_Universidad_Windows/iniciar_sistema.bat
 
       - name: Comprimir paquete Windows
         run: |
@@ -70,7 +71,6 @@ jobs:
         run: |
           pyinstaller --noconfirm --onedir --windowed \
             --name "SGHU_Universidad_Linux" \
-            --add-data "universidad_horarios.db:." \
             --add-data "src:src" \
             SGHU_Universidad.py
 
@@ -84,9 +84,72 @@ jobs:
           name: SGHU_Universidad_Linux_Canaima
           path: dist/SGHU_Universidad_Linux_Canaima.tar.gz
 
+  test-postgresql:
+    name: Probar backend PostgreSQL
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: horarios_test
+          POSTGRES_USER: horarios
+          POSTGRES_PASSWORD: test-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U horarios -d horarios_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - name: Descargar codigo
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Instalar dependencias del servidor
+        run: pip install -r requirements-server.txt
+
+      - name: Ejecutar pruebas
+        env:
+          TEST_DATABASE_URL: postgresql://horarios:test-password@localhost:5432/horarios_test
+        run: python -m unittest discover -s tests -v
+
+  test-docker-compose:
+    name: Validar despliegue Docker Compose
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar codigo
+        uses: actions/checkout@v4
+
+      - name: Configurar secretos de prueba
+        run: |
+          printf 'POSTGRES_PASSWORD=test-password\nFLASK_SECRET_KEY=test-secret-key\nWEB_PORT=5000\n' > .env
+
+      - name: Validar configuracion Docker Compose
+        run: docker compose config --quiet
+
+      - name: Construir e iniciar servicios
+        run: docker compose up --build -d
+
+      - name: Comprobar respuesta de la aplicacion
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:5000/ >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose logs web
+          exit 1
+
   release:
     name: Publicar GitHub Release Oficial
-    needs: [build-windows, build-linux]
+    needs: [build-windows, build-linux, test-postgresql, test-docker-compose]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     permissions:

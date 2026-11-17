@@ -13,6 +13,32 @@ echo "  Iniciando Sistema de Horarios Universitarios (UNESR)    "
 echo "  Plataforma: GNU/Linux (Canaima / Debian / Arch)        "
 echo "=========================================================="
 
+# Flask web server (SQLite unless DATABASE_URL selects PostgreSQL)
+if [ "$1" = "--server" ]; then
+    SERVER_PYTHON=".venv/bin/python"
+    if [ ! -x "$SERVER_PYTHON" ]; then
+        SERVER_PYTHON="python3"
+    fi
+
+    if ! "$SERVER_PYTHON" -c "import flask, openpyxl, docx" &> /dev/null; then
+        if [ ! -f "requirements-server.txt" ]; then
+            echo "[ERROR] No se encontro requirements-server.txt."
+            exit 1
+        fi
+        echo "[INFO] Instalando dependencias del servidor web..."
+        "$SERVER_PYTHON" -m pip install -r requirements-server.txt || exit 1
+    fi
+
+    if [ -n "${DATABASE_URL:-}" ] && ! "$SERVER_PYTHON" -c "import psycopg" &> /dev/null; then
+        echo "[ERROR] DATABASE_URL esta configurado pero falta psycopg."
+        echo "Instale las dependencias con: $SERVER_PYTHON -m pip install -r requirements-server.txt"
+        exit 1
+    fi
+
+    echo "[INFO] Iniciando servidor web Flask en ${FLASK_HOST:-127.0.0.1}:${FLASK_PORT:-5000}..."
+    exec "$SERVER_PYTHON" app.py
+fi
+
 # Verificar que Python 3 este disponible
 if ! command -v python3 &> /dev/null; then
     echo "[ERROR] Python 3 no esta instalado en este sistema."

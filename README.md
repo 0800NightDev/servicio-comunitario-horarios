@@ -36,7 +36,7 @@ Sistema interactivo de escritorio desarrollado en **Python (Flet + SQLite)** par
 El sistema está optimizado para funcionar sin fricción en cualquier entorno:
 
 ### En Windows
-* **Opción rápida:** Hacer doble clic en [`iniciar_sistema.bat`](iniciar_sistema.bat). El script crea el entorno virtual `.venv` e instala las dependencias automáticamente en la primera ejecución.
+* **Opción rápida:** Descarga el artefacto `SGHU_Universidad_Windows` desde GitHub Actions, extrae la carpeta completa y ejecuta [`iniciar_sistema.bat`](iniciar_sistema.bat). El paquete incluye el ejecutable y no instala Python ni dependencias.
 * **Opción manual (PowerShell / CMD):**
   ```powershell
   python -m venv .venv
@@ -63,12 +63,135 @@ El sistema está optimizado para funcionar sin fricción en cualquier entorno:
   ./iniciar_sistema.sh --web
   ```
 
-### Modo Servidor Web en Red Local (UNESR LAN / Wi-Fi)
-Si en el departamento o laboratorio hay una mezcla de computadoras (algunas con Canaima y otras con Windows):
-1. En **una sola computadora** de la sala, iniciar el servidor web:
-   ```bash
-   python app.py
-   ```
-2. Cualquier otra máquina (Canaima, Windows o teléfonos de los profesores) conectada a la misma red o Wi-Fi puede acceder desde su navegador abriendo:
-   `http://<IP-DE-LA-MAQUINA>:5000`
-3. Todos consultan y gestionan la misma base de datos `universidad_horarios.db` en tiempo real sin tener que instalar nada en sus equipos.
+### Servidor multiusuario con Docker y PostgreSQL
+
+El servidor web Flask permite que varios equipos consulten y carguen horarios en una base PostgreSQL compartida. Se instala en una computadora que permanecerá encendida y conectada a la red institucional; cada profesor usa un navegador. No se debe instalar PostgreSQL en cada equipo docente.
+
+La navegación web está organizada como la aplicación UNESR: **Dashboard**, **Nueva Carga**, **Horarios**, **Ambientes**, **Docentes** y **Carreras**. El Dashboard es un resumen; el registro individual y la importación están en su panel independiente de Nueva Carga. El logo institucional se sirve desde `src/UNESR.png`. La interfaz Flet de escritorio no se modifica con estos cambios.
+
+#### 1. Preparar la computadora servidor
+
+Usa una computadora Linux (por ejemplo, Debian, Ubuntu o Canaima) con acceso administrativo y espacio suficiente para la base, los archivos importados y las copias de seguridad. Instala Docker Engine y el complemento Docker Compose siguiendo la documentación oficial correspondiente a esa distribución; comprueba la instalación:
+
+```bash
+docker --version
+docker compose version
+```
+
+Configura una dirección IP fija o una reserva DHCP para el servidor. Así los profesores conservarán la misma dirección para abrir el sitio.
+
+#### 2. Obtener el proyecto y guardar los secretos
+
+En la computadora servidor, clona este repositorio y entra a su carpeta. Para actualizar una instalación ya existente, primero realiza una copia de seguridad (ver abajo) y luego actualiza el mismo checkout; no borres la carpeta ni los volúmenes Docker.
+
+```bash
+git clone https://github.com/mooritaa/servicio-comunitario-horarios.git
+cd servicio-comunitario-horarios
+```
+
+Crea `.env` a partir del ejemplo y genera dos secretos independientes. Pega los valores generados en `POSTGRES_PASSWORD` y `FLASK_SECRET_KEY`, sin comillas ni espacios; conserva `WEB_PORT=5000` salvo que ese puerto ya esté ocupado. No compartas ni subas `.env` a GitHub.
+
+```bash
+cp .env.example .env
+openssl rand -hex 32
+openssl rand -hex 32
+chmod 600 .env
+```
+
+Si `openssl` no está disponible, genera cada valor con `python3 -c "import secrets; print(secrets.token_hex(32))"`.
+
+#### 3. Crear la base e iniciar la aplicación
+
+Desde la carpeta del proyecto:
+
+```bash
+docker compose config --quiet
+docker compose up --build -d
+docker compose ps
+docker compose logs --tail=100 web db
+```
+
+La aplicación y PostgreSQL se inician juntos. PostgreSQL escucha únicamente dentro de la red privada de Docker; solo el puerto web se publica en la máquina servidor. El esquema se crea al iniciar la aplicación. Esta instalación empieza con una base PostgreSQL vacía: no copia ni modifica `universidad_horarios.db` ni `universidad_horarios_backup.db`. No cargues datos demo ni importes archivos reales hasta acordar qué datos deben ingresarse.
+
+Para comprobar desde el propio servidor, abre `http://127.0.0.1:5000`. Desde otro equipo de la misma red, abre `http://<IP-DEL-SERVIDOR>:5000` (o el puerto configurado en `WEB_PORT`). La dirección IP se puede consultar con `hostname -I`.
+
+#### 4. Permitir acceso solo a la red autorizada
+
+La aplicación actualmente no tiene inicio de sesión ni permisos por usuario. Antes de dar la dirección a los profesores, limita el puerto web con el firewall al rango de la red institucional. Por ejemplo, con UFW sustituye `192.168.1.0/24` por el rango real de la institución:
+
+```bash
+sudo ufw allow from 192.168.1.0/24 to any port 5000 proto tcp
+sudo ufw status
+```
+
+No habilites el acceso desde cualquier origen, no reenvíes el puerto del router a Internet y no publiques el servicio directamente en Internet. Si se requiere acceso externo, primero debe configurarse una solución segura de acceso remoto y autenticación.
+
+#### 5. Operación, reinicio y actualización
+
+Los contenedores vuelven a iniciar automáticamente si Docker reinicia. Comandos habituales:
+
+```bash
+docker compose ps
+docker compose logs -f web
+docker compose restart web
+docker compose stop
+docker compose start
+```
+
+Para actualizar el código, haz primero una copia de seguridad, actualiza el checkout y reconstruye la aplicación:
+
+```bash
+git pull
+docker compose up --build -d
+docker compose ps
+```
+
+`docker compose down` detiene y elimina los contenedores, pero conserva los volúmenes persistentes. **Nunca uses `docker compose down -v` para una detención o actualización normal**: `-v` elimina los volúmenes de PostgreSQL y de archivos cargados.
+
+#### 6. Copias de seguridad y restauración
+
+Realiza respaldos periódicos y guárdalos fuera de la computadora servidor, en un lugar con acceso restringido. Esto crea un respaldo PostgreSQL en formato comprimido:
+
+```bash
+mkdir -p respaldos
+docker compose exec -T db pg_dump -U horarios -d horarios -Fc \
+  > "respaldos/horarios-$(date +%F).dump"
+```
+
+Los archivos importados están en otro volumen y deben respaldarse por separado:
+
+```bash
+docker compose cp web:/app/uploads ./respaldos/uploads
+```
+
+Verifica que los archivos generados existan y tengan tamaño mayor que cero, y copia la carpeta `respaldos` a un almacenamiento seguro. Un respaldo que no se ha probado no garantiza que pueda restaurarse.
+
+La restauración reemplaza datos existentes. Hazla solo cuando sea necesario, conserva primero una copia del estado actual, y detén la aplicación para evitar escrituras concurrentes. Con un archivo `.dump` creado por el comando anterior:
+
+```bash
+docker compose stop web
+docker compose exec -T db pg_restore -U horarios -d horarios \
+  --clean --if-exists < respaldos/horarios-AAAA-MM-DD.dump
+docker compose start web
+```
+
+Sustituye el nombre por el respaldo que vas a restaurar. No ejecutes una restauración como parte de una actualización normal.
+
+### Compilar y distribuir el ejecutable para los profesores
+
+El workflow **Compilar Ejecutables Multiplataforma** construye el paquete de escritorio en runners Windows y Linux de GitHub Actions. Un `.exe` de Windows debe compilarse en Windows; Docker en Linux no lo genera. Para iniciar una compilación:
+
+1. Abre el repositorio en GitHub y entra a **Actions**.
+2. Selecciona **Compilar Ejecutables Multiplataforma** en la lista de workflows.
+3. Pulsa **Run workflow**, elige la rama que contiene los cambios aprobados y confirma.
+4. Espera que finalicen los trabajos de compilación y validación. Si uno falla, no distribuyas ese paquete.
+5. Abre la ejecución completada y descarga el artefacto **SGHU_Universidad_Windows**.
+6. Copia el ZIP a cada equipo Windows, extráelo completo en una carpeta con permisos de escritura del profesor y ejecuta `iniciar_sistema.bat`. No ejecutes el `.exe` desde dentro del ZIP ni copies únicamente el `.exe`: necesita los demás archivos del paquete.
+
+El artefacto de Actions es temporal y puede caducar; para una versión estable se puede crear y publicar un tag `v*`, lo que genera un GitHub Release con los paquetes de Windows y Linux. Descarga el paquete aprobado y conserva la versión distribuida para facilitar soporte.
+
+El ejecutable de escritorio funciona localmente con SQLite y **no se conecta** al servidor PostgreSQL. Si varios profesores deben compartir los mismos datos, cada uno debe entrar por navegador a la URL del servidor; no se deben intercambiar copias de la base SQLite como mecanismo multiusuario.
+
+### Modo web local sin Docker
+
+En Linux, `./iniciar_sistema.sh --server` inicia el servidor web con SQLite si `DATABASE_URL` no está configurado, o PostgreSQL si se configura una URL válida. Por defecto escucha solo en `127.0.0.1`, por lo que sirve para pruebas en el mismo equipo. Para un servidor multiusuario se recomienda el despliegue Docker documentado arriba.

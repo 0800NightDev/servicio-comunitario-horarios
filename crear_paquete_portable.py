@@ -1,4 +1,4 @@
-"""copia comprimida del sistema, incluyendo la base de datos.
+"""Crea una copia comprimida del sistema sin incluir datos locales.
 
 Uso:
     python crear_paquete_portable.py [ruta_de_salida]
@@ -35,6 +35,8 @@ EXCLUDE_SUFFIXES = (
     ".pyc",
     ".pyo",
     ".zip",
+    ".db",
+    ".db-journal",
     ".db-shm",
     ".db-wal",
 )
@@ -84,13 +86,13 @@ def crear_paquete(salida: str) -> None:
 
         contenido = (
             f"Sistema empaquetado el {datetime.now().strftime('%d/%m/%Y %H:%M')}\n\n"
-            "Incluye la base de datos universidad_horarios.db.\n\n"
+            "No incluye bases de datos ni datos cargados; cada instalacion crea su propia base local.\n\n"
             "Para usarlo en otra computadora:\n"
             "1. Descomprimir este archivo.\n"
             "2. Abrir la carpeta resultante.\n"
-            "3. En Windows, hacer doble clic en iniciar_sistema.bat.\n"
-            "   En Linux/Canaima, ejecutar iniciar_sistema.sh.\n"
-            "4. El sistema recreará el entorno virtual e instalará las dependencias la primera vez.\n"
+            "3. Este paquete contiene codigo fuente; para Windows, descarga el ejecutable compilado desde GitHub Actions.\n"
+            "4. Para ejecutar el codigo fuente se requiere Python y las dependencias de requirements.txt.\n"
+            "   En Linux/Canaima, instala las dependencias y ejecuta iniciar_sistema.sh.\n"
         )
         paquete.writestr(f"{PROJECT_NAME}/PAQUETE_PORTABLE.txt", contenido)
 

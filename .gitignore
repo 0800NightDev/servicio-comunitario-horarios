@@ -7,6 +7,8 @@ env/
 __pycache__/
 *.py[cod]
 *$py.class
+*.db-shm
+*.db-wal
 
 # Reportes temporales generados al imprimir
 reportes_imprimibles/
@@ -19,3 +21,6 @@ Thumbs.db
 
 # Bandera de inicio en blanco
 .iniciar_en_blanco
+
+# Credenciales locales y archivos Docker
+.env
