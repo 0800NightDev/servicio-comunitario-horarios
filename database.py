@@ -1,6 +1,7 @@
 import sqlite3
 import os
 import sys
+import shutil
 import re
 import unicodedata
 
@@ -140,10 +141,25 @@ def validar_profesor_basico(nombre, cedula="", email="", requerir_cedula=True):
 
 
 def obtener_ruta_base():
-    """Retorna el directorio base correcto ya sea en script .py o empaquetado (.exe / binario)."""
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(__file__))
+    """Retorna una carpeta escribible para los datos persistentes de la aplicación."""
+    if not getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(__file__))
+
+    if os.name == "nt":
+        data_root = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    else:
+        data_root = os.environ.get(
+            "XDG_DATA_HOME",
+            os.path.join(os.path.expanduser("~"), ".local", "share"),
+        )
+    data_dir = os.path.join(data_root, "UNESR", "Horarios")
+    os.makedirs(data_dir, exist_ok=True)
+
+    legacy_db = os.path.join(os.path.dirname(sys.executable), "universidad_horarios.db")
+    user_db = os.path.join(data_dir, "universidad_horarios.db")
+    if not os.path.exists(user_db) and os.path.isfile(legacy_db):
+        shutil.copy2(legacy_db, user_db)
+    return data_dir
 
 
 BASE_DIR = obtener_ruta_base()
@@ -170,6 +186,251 @@ AMBIENTES_ESPECIALES = [
     ("VIRTUAL-02", 100, "Campus Virtual"),
 ]
 SALONES_VERSION = "2"
+FACULTAD_PNF = "Programas Nacionales de Formación (PNF)"
+CARRERAS_PNF = (
+    "PNF Fisioterapia",
+    "PNF Veterinaria",
+    "PNF Agroecología",
+)
+
+# Catálogo oficial del Programa Nacional de Formación en Fisioterapia (PNFF),
+# tomado de la "Malla Curricular - Programa Nacional de Formación en
+# Fisioterapia (PNFF).pdf". Cada registro es:
+#   (nombre de la unidad curricular / materia, código, trayecto-tramo, U.C.)
+# El campo "trayecto-tramo" se guarda en materias.semestre porque es el que
+# alimenta el selector de "Ciclo" en la carga académica (web y escritorio).
+MATERIAS_FISIOTERAPIA = (
+    # Trayecto Inicial (Ciclo Introductorio - 12 semanas)
+    ("Proyecto Nacional y Nueva Ciudadanía", "PNYNC60T12", "Trayecto Inicial (Ciclo Introductorio)", 2),
+    ("Salud Pública y Fisioterapia", "SPF60T12", "Trayecto Inicial (Ciclo Introductorio)", 2),
+    ("Lectura y Comprensión", "LYC60T12", "Trayecto Inicial (Ciclo Introductorio)", 2),
+    ("Matemática, Química y Física", "MQF96T13", "Trayecto Inicial (Ciclo Introductorio)", 3),
+    # Primer Trayecto (Año 1)
+    ("Sistemas Óseo y Articular", "SOA114", "Primer Trayecto - Tramo I", 4),
+    ("Fundamentos de Fisioterapia", "FF112", "Primer Trayecto - Tramo I", 2),
+    ("Diversidad Cultural y Nueva Ciudadanía", "DCNC111", "Primer Trayecto - Tramo I", 1),
+    ("Bases del Conocimiento Científico I", "BCCI112", "Primer Trayecto - Tramo I", 2),
+    ("Sistema Muscular", "SM124", "Primer Trayecto - Tramo II", 4),
+    ("Principios Físicos Aplicados a la Fisioterapia", "PFAF122", "Primer Trayecto - Tramo II", 2),
+    ("Herramientas Tecnológicas I", "HT122", "Primer Trayecto - Tramo II", 2),
+    ("Bases del Conocimiento Científico II", "BCCII122", "Primer Trayecto - Tramo II", 2),
+    ("Sistema Nervioso", "SN134", "Primer Trayecto - Tramo III", 4),
+    ("Análisis del Movimiento Humano", "AMH134", "Primer Trayecto - Tramo III", 4),
+    ("Medios Físicos I", "MFI133", "Primer Trayecto - Tramo III", 3),
+    ("Valoración y Diagnóstico en Fisioterapia I", "VDFI133", "Primer Trayecto - Tramo III", 3),
+    ("Atención Comunitaria para Personas con Discapacidad I", "ACPDI132", "Primer Trayecto - Tramo III", 2),
+    # En el PDF: código VSP132 (en tabla: BSP133) y U.C. 2 (3 en tabla).
+    ("Valoración de la Salud Pública", "VSP132", "Primer Trayecto - Tramo III", 2),
+    # Segundo Trayecto (Año 2)
+    ("Alteraciones de los Sistemas Óseo, Articular y Muscular I", "ASOAMI212", "Segundo Trayecto - Tramo I", 2),
+    ("Medios Físicos II", "MFII213", "Segundo Trayecto - Tramo I", 3),
+    ("Valoración y Diagnóstico en Fisioterapia II", "VDFII213", "Segundo Trayecto - Tramo I", 3),
+    ("Atención Comunitaria a las Personas con Discapacidad II", "ACPDII212", "Segundo Trayecto - Tramo I", 2),
+    ("Fundamentos Estadísticos y Epidemiológicos en Salud I", "FEESI213", "Segundo Trayecto - Tramo I", 3),
+    ("Alteraciones de los Sistemas Óseo, Articular y Muscular II", "ASOAMII222", "Segundo Trayecto - Tramo II", 2),
+    ("Técnicas de Intervención en Fisioterapia I", "TIFI223", "Segundo Trayecto - Tramo II", 3),
+    ("Inglés Instrumental", "II221", "Segundo Trayecto - Tramo II", 1),
+    ("Recreación, Educación Física y Deporte en Fisioterapia", "REFDF221", "Segundo Trayecto - Tramo II", 1),
+    ("Fundamentos Estadísticos y Epidemiológicos en Salud II", "FEESII223", "Segundo Trayecto - Tramo II", 3),
+    ("Alteraciones del Sistema Nervioso I", "ASN232", "Segundo Trayecto - Tramo III", 2),
+    ("Técnicas de Intervención en Fisioterapia II", "TIFII233", "Segundo Trayecto - Tramo III", 3),
+    ("Prácticas Profesionales I", "PPI2313", "Segundo Trayecto - Tramo III", 13),
+    ("Herramientas Tecnológicas II", "HTII232", "Segundo Trayecto - Tramo III", 2),
+    ("Fundamentos Estadísticos y Epidemiológicos en Salud III", "FEESIII233", "Segundo Trayecto - Tramo III", 3),
+    # Tercer Trayecto (Año 3 - Salida T.S.U. en Fisioterapia)
+    ("Alteraciones del Sistema Nervioso II", "ASNII312", "Tercer Trayecto - Tramo I", 2),
+    ("Técnicas de Intervención en Fisioterapia III", "TIFIII313", "Tercer Trayecto - Tramo I", 3),
+    ("Prácticas Profesionales II", "PPII3113", "Tercer Trayecto - Tramo I", 13),
+    ("Políticas Públicas en Salud y Marco Normativo en el Área de la Discapacidad", "PPSMNAD312", "Tercer Trayecto - Tramo I", 2),
+    ("Diagnóstico Comunitario y Discapacidad", "DCD313", "Tercer Trayecto - Tramo I", 3),
+    ("Sistema Cardiovascular y Respiratorio", "SCR322", "Tercer Trayecto - Tramo II", 2),
+    ("Fisiología del Ejercicio", "FE323", "Tercer Trayecto - Tramo II", 3),
+    ("Valoración y Diagnóstico en Fisioterapia III", "VDFIII322", "Tercer Trayecto - Tramo II", 2),
+    ("Técnicas de Intervención en Fisioterapia IV", "TIFIV323", "Tercer Trayecto - Tramo II", 3),
+    ("Psicología del Desarrollo Humano", "PDH322", "Tercer Trayecto - Tramo II", 2),
+    ("Planificación Comunitaria y Discapacidad", "PCD323", "Tercer Trayecto - Tramo II", 3),
+    ("Alteraciones Cardio-Respiratorias", "ACR332", "Tercer Trayecto - Tramo III", 2),
+    ("Técnicas de Intervención en Fisioterapia V", "TIFV332", "Tercer Trayecto - Tramo III", 2),
+    ("Prácticas Profesionales III", "PPIII3313", "Tercer Trayecto - Tramo III", 13),
+    ("Psicología Social", "PS332", "Tercer Trayecto - Tramo III", 2),
+    ("Intervención Comunitaria y Discapacidad", "ICD333", "Tercer Trayecto - Tramo III", 3),
+    # Cuarto Trayecto (Año 4 - Salida Licenciado/a en Fisioterapia)
+    ("Diagnóstico en Fisioterapia", "DF414", "Cuarto Trayecto - Tramo I", 4),
+    ("Sistema Tegumentario y Linfático", "STL412", "Cuarto Trayecto - Tramo I", 2),
+    ("Intervención Especializada I", "IEI415", "Cuarto Trayecto - Tramo I", 5),
+    ("Ambiente y Salud", "AS411", "Cuarto Trayecto - Tramo I", 1),
+    ("Gerencia de la Información en los Sistemas de Salud", "GISS414", "Cuarto Trayecto - Tramo I", 4),
+    ("Esfera Urogenital", "EU421", "Cuarto Trayecto - Tramo II", 1),
+    ("Sistema Estomatognático", "SE421", "Cuarto Trayecto - Tramo II", 1),
+    # En el PDF: código IEII425 (en ficha: IEI415).
+    ("Intervención Especializada II", "IEII425", "Cuarto Trayecto - Tramo II", 5),
+    ("Accesibilidad", "A422", "Cuarto Trayecto - Tramo II", 2),
+    ("Protección, Bioseguridad y Seguridad Social", "PBSS422", "Cuarto Trayecto - Tramo II", 2),
+    # En el PDF: código EISD424 (en ficha: GISS414).
+    ("Evaluación de Impacto en Salud y Discapacidad", "EISD424", "Cuarto Trayecto - Tramo II", 4),
+    ("Fisioterapia Aplicada al Deporte", "FAD433", "Cuarto Trayecto - Tramo III", 3),
+    ("Intervención Especializada III", "IEIII435", "Cuarto Trayecto - Tramo III", 5),
+    ("Consolidación y Presentación del Proyecto", "CPP434", "Cuarto Trayecto - Tramo III", 4),
+)
+
+MATERIAS_FISIOTERAPIA_VERSION = "1"
+
+# Catálogo oficial del PNF en Medicina Veterinaria, tomado de la
+# "Malla_Curricular_-_PNF_en_Medicina_Veterinaria.pdf". Cada registro es:
+#   (unidad curricular, código, trayecto-tramo, U.C.)
+# Notas sobre el PDF: los proyectos I, II, III y V aparecen repetidos en
+# ambos tramos de su trayecto (se registran una sola vez), el "Proyecto V"
+# del Tramo II de Trayecto V (MVPV025) es una errata de MVPYV025, y las dos
+# "Prácticas Profesionales" (MVPP900 y MVPP910) se numeran para respetar la
+# unicidad de nombre por carrera.
+MATERIAS_VETERINARIA = (
+    # Trayecto Inicial
+    ("Introducción a la Universidad y al PNF en Medicina Veterinaria", "MVIUP001", "Trayecto Inicial", 0),
+    ("Proyecto Nacional Nueva Ciudadanía, Lectura y Comprensión", "MVPLC001", "Trayecto Inicial", 0),
+    ("Ciencias Básicas y Tecnología: Matemática, Química, Biología y TIC", "MVCBT001", "Trayecto Inicial", 0),
+    # Trayecto I - Tramo I
+    ("Proyecto I", "MVPYI005", "Trayecto I - Tramo I", 4),
+    ("Anatomía de los Animales Domésticos I", "MVAADI105", "Trayecto I - Tramo I", 5),
+    ("Histología Veterinaria", "MVHV200", "Trayecto I - Tramo I", 3),
+    ("Sistemas de Producción Animal I", "MVSPAI305", "Trayecto I - Tramo I", 3),
+    ("Bioquímica I", "MVBI400", "Trayecto I - Tramo I", 2),
+    ("Estadística Descriptiva", "MVED505", "Trayecto I - Tramo I", 2),
+    ("Pastos y Forraje", "MVPF605", "Trayecto I - Tramo I", 2),
+    # Trayecto I - Tramo II
+    ("Anatomía de los Animales Domésticos II", "MVAADII110", "Trayecto I - Tramo II", 5),
+    ("Histología y Embriología", "MVHE205", "Trayecto I - Tramo II", 3),
+    ("Sistemas de Producción Animal II", "MVSPAII310", "Trayecto I - Tramo II", 3),
+    ("Bioquímica II", "MVBII405", "Trayecto I - Tramo II", 2),
+    ("Alimentación y Nutrición Animal Monogástricos", "MVANAM705", "Trayecto I - Tramo II", 2),
+    ("Inglés Técnico I", "MVITI805", "Trayecto I - Tramo II", 1),
+    ("Electiva I: Uso y Aprovechamiento de los Desechos Orgánicos", "MVELIUAD", "Trayecto I - Tramo II", 1),
+    # Trayecto II - Tramo I
+    ("Proyecto II", "MVPYII010", "Trayecto II - Tramo I", 4),
+    ("Fisiología Animal Básica", "MVFAB215", "Trayecto II - Tramo I", 3),
+    ("Manejo de Sistemas de Producción Animal I", "MVMSPI320", "Trayecto II - Tramo I", 3),
+    ("Alimentación y Nutrición de Poligástricos", "MVANAP710", "Trayecto II - Tramo I", 2),
+    ("Microbiología Veterinaria", "MVMV410", "Trayecto II - Tramo I", 3),
+    ("Parasitología y Enfermedades Parasitarias", "MVPEP415", "Trayecto II - Tramo I", 3),
+    ("Actividad Recreativa y Cultural", "MVARC125", "Trayecto II - Tramo I", 1),
+    ("Electiva II: Orientación e Integración Psicosocial", "MVELIIOEP", "Trayecto II - Tramo I", 1),
+    # Trayecto II - Tramo II
+    ("Fisiología Animal Aplicada", "MVFAB220", "Trayecto II - Tramo II", 3),
+    ("Inmunología", "MVI425", "Trayecto II - Tramo II", 2),
+    ("Bioestadística", "MVB510", "Trayecto II - Tramo II", 2),
+    ("Farmacología y Toxicología", "MVFT420", "Trayecto II - Tramo II", 3),
+    ("Manejo de Sistemas de Producción Animal II", "MVMSPII325", "Trayecto II - Tramo II", 3),
+    ("Genética", "MVG330", "Trayecto II - Tramo II", 2),
+    ("Inglés Técnico II", "MVITII810", "Trayecto II - Tramo II", 1),
+    # Trayecto III - Tramo I
+    ("Proyecto III", "MVPYIII015", "Trayecto III - Tramo I", 4),
+    ("Mejoramiento Genético", "MVMG335", "Trayecto III - Tramo I", 2),
+    ("Enfermedades Infectocontagiosas", "MVEI230", "Trayecto III - Tramo I", 2),
+    ("Semiología", "MVS720", "Trayecto III - Tramo I", 3),
+    ("Anatomía Patológica", "MVAP120", "Trayecto III - Tramo I", 3),
+    ("Laboratorio Clínico", "MVLC730", "Trayecto III - Tramo I", 3),
+    ("Ética y Deontología Veterinaria", "MVEDV130", "Trayecto III - Tramo I", 1),
+    ("Imagenología Animal", "MVIA725", "Trayecto III - Tramo I", 2),
+    # Trayecto III - Tramo II
+    ("Prácticas Profesionales I", "MVPP900", "Trayecto III - Tramo II", 5),
+    ("Salud Pública", "MVSP340", "Trayecto III - Tramo II", 2),
+    ("Cirugía I (Instrumentación)", "MVCI740", "Trayecto III - Tramo II", 3),
+    ("Introducción a la Clínica Veterinaria", "MVICV750", "Trayecto III - Tramo II", 3),
+    ("Reproducción Animal I", "MVRAI250", "Trayecto III - Tramo II", 2),
+    ("Enfermedades No Infecciosas", "MVENI350", "Trayecto III - Tramo II", 2),
+    # Trayecto IV - Tramo I
+    ("Proyecto IV", "MVPYIV020", "Trayecto IV - Tramo I", 4),
+    ("Epidemiología", "MVE360", "Trayecto IV - Tramo I", 2),
+    ("Higiene de los Alimentos", "MVHA430", "Trayecto IV - Tramo I", 2),
+    ("Clínica I", "MVCI755", "Trayecto IV - Tramo I", 3),
+    ("Cirugía II", "MVCII745", "Trayecto IV - Tramo I", 3),
+    ("Reproducción Animal II", "MVRAII260", "Trayecto IV - Tramo I", 2),
+    ("Inglés Técnico III", "MVITIII815", "Trayecto IV - Tramo I", 1),
+    ("Electiva III: Fauna Silvestre", "MVELIIIFS", "Trayecto IV - Tramo I", 1),
+    # Trayecto IV - Tramo II
+    ("Prevención y Riesgo en la Profesión", "MVPRP370", "Trayecto IV - Tramo II", 2),
+    ("Clínica II", "MVCII760", "Trayecto IV - Tramo II", 3),
+    ("Medicina de Rumiantes", "MVMR380", "Trayecto IV - Tramo II", 3),
+    ("Industria de Productos Cárnicos", "MVIPC440", "Trayecto IV - Tramo II", 3),
+    ("Gestión Agropecuaria", "MVGA140", "Trayecto IV - Tramo II", 2),
+    ("Electiva IV: Organización Comunitaria", "MVELIVOC", "Trayecto IV - Tramo II", 1),
+    # Trayecto V - Tramo I
+    ("Proyecto V", "MVPYV025", "Trayecto V - Tramo I", 4),
+    ("Medicina en Equinos, Caninos y otras Especies", "MVMEC385", "Trayecto V - Tramo I", 3),
+    ("Legislación Veterinaria", "MVLV150", "Trayecto V - Tramo I", 2),
+    ("Biotecnología en Ciencias Veterinarias", "MVBCV270", "Trayecto V - Tramo I", 3),
+    ("Industria de Productos Lácteos", "MVIPL450", "Trayecto V - Tramo I", 3),
+    # Trayecto V - Tramo II
+    ("Prácticas Profesionales II", "MVPP910", "Trayecto V - Tramo II", 9),
+    ("Medicina de Cerdos y Aves", "MVMCA390", "Trayecto V - Tramo II", 3),
+    ("Terapias Alternativas en Agroecología", "MVTAA160", "Trayecto V - Tramo II", 2),
+)
+
+MATERIAS_VETERINARIA_VERSION = "1"
+
+# Unidades curriculares del PNF en Agroecología (Plan de Estudio 2017),
+# tomadas del récord académico de la UNESR Núcleo Palo Verde.
+# Se excluyen las filas "(Secundaria)" porque son equivalencias de nivel
+# medio (códigos con sufijo -1, -2, ...), no unidades curriculares del PNF.
+# El récord muestra 45 de 46 unidades aprobadas (188 U.C.); la restante no
+# aparece en el documento. "Acreditable (Deporte)" se repite en varios
+# trayectos, por lo que se distingue la del Trayecto III para respetar la
+# unicidad de nombre por carrera. El código PNFAGT541 aparece como
+# "PNFAGT541- Inactiva" en el récord.
+MATERIAS_AGROECOLOGIA = (
+    # Trayecto Inicial
+    ("Matemática General", "PNFAGTI03", "Trayecto Inicial", 0),
+    ("Iniciación a la Institución y al PNF en Agroecología", "PNFAGTI02", "Trayecto Inicial", 0),
+    ("Lenguaje y Comunicación", "PNFAGTI04", "Trayecto Inicial", 0),
+    ("Proyecto Nacional y Nueva Ciudadanía", "PNFAGTI01", "Trayecto Inicial", 0),
+    ("Tecnologías de Información y Comunicación - TIC", "PNFAGTI05", "Trayecto Inicial", 0),
+    ("Química General", "PNFAGTI06", "Trayecto Inicial", 0),
+    # Trayecto I - Tramo I
+    ("Ciencias Bio-Químicas", "PNFAGT109", "Trayecto I - Tramo I", 5),
+    ("Ciencias Físico-Matemáticas", "PNFAGT108", "Trayecto I - Tramo I", 5),
+    ("Ciencias Biológicas", "PNFAGT110", "Trayecto I - Tramo I", 5),
+    ("Ecofilosofía", "PNFAGT113", "Trayecto I - Tramo I", 4),
+    ("Introducción a la Agroecología", "PNFAGT111", "Trayecto I - Tramo I", 5),
+    ("Proyecto Socioproductivo Integrador I", "PNFAGT107", "Trayecto I - Tramo I", 9),
+    ("Agroclimatología", "PNFAGT112", "Trayecto I - Tramo I", 4),
+    # Trayecto II - Tramo I
+    ("Ecofisiología", "PNFAGT216", "Trayecto II - Tramo I", 5),
+    ("Acreditable (Deporte)", "PNFAGT220", "Trayecto II - Tramo I", 3),
+    ("Agroecología Funcional", "PNFAGT218", "Trayecto II - Tramo I", 5),
+    ("Bioestadística", "PNFAGT215", "Trayecto II - Tramo I", 5),
+    ("Proyecto Socioproductivo Integrador II", "PNFAGT214", "Trayecto II - Tramo I", 9),
+    ("Ecotecnologías", "PNFAGT217", "Trayecto II - Tramo I", 4),
+    ("Electiva", "PNFAGT221", "Trayecto II - Tramo I", 4),
+    ("Sociohistoria de la Agricultura en América", "PNFAGT219", "Trayecto II - Tramo I", 4),
+    # Trayecto III - Tramo I
+    ("Electiva II", "PNFAGT327", "Trayecto III - Tramo I", 4),
+    ("Proyecto Socioproductivo Integrador III", "PNFAGT321", "Trayecto III - Tramo I", 9),
+    ("Agroecología Animal", "PNFAGT322", "Trayecto III - Tramo I", 4),
+    ("Cultivo Agroecológico", "PNFAGT323", "Trayecto III - Tramo I", 5),
+    ("Geopolítica Territorial Agroecológica Intertropical", "PNFAGT324", "Trayecto III - Tramo I", 4),
+    ("Planificación Agroecológica", "PNFAGT325", "Trayecto III - Tramo I", 5),
+    ("Acreditable (Deporte) - Trayecto III", "PNFAGT326", "Trayecto III - Tramo I", 3),
+    ("Práctica Profesional", "PNFAGT328", "Trayecto III - Tramo I", 0),
+    # Trayecto IV - Tramo I
+    ("Electiva III", "PNFAGT436", "Trayecto IV - Tramo I", 4),
+    ("Acreditable (Deporte 4)", "PNFAGT435", "Trayecto IV - Tramo I", 3),
+    ("Proyecto Socioproductivo Integrador IV", "PNFAGT429", "Trayecto IV - Tramo I", 9),
+    ("Ciencias de Cuencas Hidrográficas", "PNFAGT430", "Trayecto IV - Tramo I", 7),
+    ("Suelo Agroecológico", "PNFAGT431", "Trayecto IV - Tramo I", 5),
+    ("Manejo de Enfermedades y Enemigos Naturales de las Plantas", "PNFAGT432", "Trayecto IV - Tramo I", 8),
+    ("Ecoconstrucciones", "PNFAGT433", "Trayecto IV - Tramo I", 5),
+    ("Ciencia, Tecnología y Sociedad", "PNFAGT434", "Trayecto IV - Tramo I", 4),
+    # Trayecto V - Tramo I
+    ("Economía Agroecológica", "PNFAGT538", "Trayecto V - Tramo I", 5),
+    ("Acreditable (Deporte 5)", "PNFAGT539", "Trayecto V - Tramo I", 3),
+    ("Acreditable 5", "PNFAGT540", "Trayecto V - Tramo I", 3),
+    ("Mejoramiento Genético Participativo", "PNFAGT537", "Trayecto V - Tramo I", 5),
+    ("Electiva IV", "PNFAGT541", "Trayecto V - Tramo I", 4),
+    ("Electiva V", "PNFAGT542", "Trayecto V - Tramo I", 4),
+    ("Práctica Profesional II", "PNFAGT543", "Trayecto V - Tramo I", 0),
+    ("Proyecto Socioproductivo Integrador V", "PNFAGT536", "Trayecto V - Tramo I", 9),
+)
+
+MATERIAS_AGROECOLOGIA_VERSION = "1"
 
 
 def generar_codigos_pisos():
@@ -444,6 +705,12 @@ def init_db():
 
     # Crear/migrar el inventario oficial de ambientes.
     _migrar_salones(cursor)
+    _asegurar_carreras_pnf(cursor)
+    # Catálogos académicos de los PNF: mismo comportamiento que las demás
+    # carreras al filtrar materias, códigos, ciclo y unidades de crédito.
+    asegurar_materias_fisioterapia(cursor)
+    asegurar_materias_veterinaria(cursor)
+    asegurar_materias_agroecologia(cursor)
 
     conn.commit()
     conn.close()
@@ -455,10 +722,6 @@ def clear_all_data(keep_salones=True):
     cursor.execute("DELETE FROM asignaciones_horario;")
     cursor.execute("DELETE FROM carga_academica;")
     cursor.execute("DELETE FROM disponibilidades;")
-    cursor.execute("DELETE FROM materias;")
-    cursor.execute("DELETE FROM profesores;")
-    cursor.execute("DELETE FROM carreras;")
-    cursor.execute("DELETE FROM facultades;")
     if not keep_salones:
         cursor.execute("DELETE FROM salones;")
     conn.commit()
@@ -498,6 +761,230 @@ def get_or_create_carrera(cursor, nombre, facultad_id):
         (nombre, facultad_id),
     )
     return cursor.fetchone()["id"]
+
+
+def _asegurar_carreras_pnf(cursor):
+    facultad_id = get_or_create_facultad(cursor, FACULTAD_PNF)
+    for nombre in CARRERAS_PNF:
+        cursor.execute(
+            "SELECT id FROM carreras WHERE LOWER(nombre) = LOWER(?) AND facultad_id = ?",
+            (nombre, facultad_id),
+        )
+        if not cursor.fetchone():
+            get_or_create_carrera(cursor, nombre, facultad_id)
+
+
+def _asegurar_catalogo_pnf(nombre_carrera, catalogo, clave_version, version, cursor=None, forzar=False):
+    """Carga/actualiza el catálogo de un PNF en su carrera correspondiente.
+
+    Se ejecuta una sola vez por versión (controlada con la tabla
+    ``configuracion``) para no recrear la carrera si el usuario la renombró
+    ni sobrescribir ajustes posteriores. Con ``forzar=True`` se resincroniza
+    el catálogo con el PDF de origen.
+    """
+    conn = None
+    if cursor is None:
+        conn = get_connection()
+        cursor = conn.cursor()
+
+    try:
+        if not forzar and _obtener_config(cursor, clave_version) == version:
+            return 0
+
+        facultad_id = get_or_create_facultad(cursor, FACULTAD_PNF)
+        carrera_id = get_or_create_carrera(cursor, nombre_carrera, facultad_id)
+        insertadas = 0
+        for nombre, codigo, semestre, unidad_credito in catalogo:
+            cursor.execute(
+                "SELECT id FROM materias WHERE LOWER(nombre) = LOWER(?) AND carrera_id = ?",
+                (nombre, carrera_id),
+            )
+            fila = cursor.fetchone()
+            if fila:
+                cursor.execute(
+                    "UPDATE materias SET codigo = ?, semestre = ?, unidad_credito = ? "
+                    "WHERE id = ?",
+                    (codigo, semestre, unidad_credito, fila["id"]),
+                )
+            else:
+                cursor.execute(
+                    "INSERT INTO materias (nombre, codigo, carrera_id, semestre, unidad_credito) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (nombre, codigo, carrera_id, semestre, unidad_credito),
+                )
+                insertadas += 1
+
+        _guardar_config(cursor, clave_version, version)
+        if conn is not None:
+            conn.commit()
+        return insertadas
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def asegurar_materias_fisioterapia(cursor=None, forzar=False):
+    """Catálogo del PNF en Fisioterapia (63 unidades curriculares)."""
+    return _asegurar_catalogo_pnf(
+        "PNF Fisioterapia", MATERIAS_FISIOTERAPIA,
+        "materias_fisioterapia_version", MATERIAS_FISIOTERAPIA_VERSION,
+        cursor, forzar,
+    )
+
+
+def asegurar_materias_veterinaria(cursor=None, forzar=False):
+    """Catálogo del PNF en Medicina Veterinaria (68 unidades curriculares)."""
+    return _asegurar_catalogo_pnf(
+        "PNF Veterinaria", MATERIAS_VETERINARIA,
+        "materias_veterinaria_version", MATERIAS_VETERINARIA_VERSION,
+        cursor, forzar,
+    )
+
+
+def asegurar_materias_agroecologia(cursor=None, forzar=False):
+    """Catálogo del PNF en Agroecología (45 unidades curriculares)."""
+    return _asegurar_catalogo_pnf(
+        "PNF Agroecología", MATERIAS_AGROECOLOGIA,
+        "materias_agroecologia_version", MATERIAS_AGROECOLOGIA_VERSION,
+        cursor, forzar,
+    )
+
+
+def obtener_carreras():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """SELECT c.id, c.nombre, c.facultad_id, f.nombre AS facultad
+           FROM carreras c
+           JOIN facultades f ON f.id = c.facultad_id
+           ORDER BY f.nombre COLLATE NOCASE, c.nombre COLLATE NOCASE"""
+    )
+    carreras = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return carreras
+
+
+def obtener_materias_carrera(carrera_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """SELECT id, nombre, codigo, semestre, unidad_credito
+           FROM materias
+           WHERE carrera_id = ?
+           ORDER BY
+             CASE
+               WHEN LOWER(semestre) LIKE 'introduct%' THEN 1
+               WHEN LOWER(semestre) LIKE 'trayecto inicial%' THEN 1
+               WHEN LOWER(semestre) LIKE 'general%' THEN 2
+               WHEN LOWER(semestre) LIKE 'elect%' THEN 3
+               WHEN LOWER(semestre) LIKE 'profes%' THEN 4
+               WHEN LOWER(semestre) LIKE 'primer trayecto%' OR LOWER(semestre) LIKE 'trayecto i - tramo%' THEN 5
+               WHEN LOWER(semestre) LIKE 'segundo trayecto%' OR LOWER(semestre) LIKE 'trayecto ii - tramo%' THEN 6
+               WHEN LOWER(semestre) LIKE 'tercer trayecto%' OR LOWER(semestre) LIKE 'trayecto iii - tramo%' THEN 7
+               WHEN LOWER(semestre) LIKE 'cuarto trayecto%' OR LOWER(semestre) LIKE 'trayecto iv - tramo%' THEN 8
+               WHEN LOWER(semestre) LIKE 'trayecto v - tramo%' THEN 9
+               ELSE 10
+             END,
+             semestre COLLATE NOCASE,
+             codigo COLLATE NOCASE,
+             nombre COLLATE NOCASE""",
+        (carrera_id,),
+    )
+    materias = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return materias
+
+
+def obtener_profesores_capacitados(carrera_id=None, materia_nombre="", busqueda=""):
+    conn = get_connection()
+    cursor = conn.cursor()
+    query = """
+        SELECT DISTINCT
+            p.id,
+            p.nombre,
+            COALESCE(p.cedula, '') AS cedula,
+            COALESCE(p.email, '') AS email,
+            COALESCE(p.condicion, 'Contratado/a') AS condicion,
+            c.id AS carrera_id,
+            c.nombre AS carrera,
+            m.nombre AS materia
+        FROM carga_academica ca
+        JOIN profesores p ON p.id = ca.profesor_id
+        JOIN materias m ON m.id = ca.materia_id
+        JOIN carreras c ON c.id = m.carrera_id
+        WHERE 1=1
+    """
+    params = []
+    if carrera_id:
+        query += " AND c.id = ?"
+        params.append(carrera_id)
+    if str(materia_nombre or "").strip():
+        query += " AND LOWER(m.nombre) = LOWER(?)"
+        params.append(str(materia_nombre).strip())
+    if str(busqueda or "").strip():
+        termino = f"%{str(busqueda).strip().lower()}%"
+        query += " AND (LOWER(p.nombre) LIKE ? OR LOWER(c.nombre) LIKE ? OR LOWER(m.nombre) LIKE ?)"
+        params.extend([termino, termino, termino])
+    query += " ORDER BY p.nombre COLLATE NOCASE, c.nombre COLLATE NOCASE"
+    cursor.execute(query, params)
+    profesores = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return profesores
+
+
+def obtener_facultades():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, nombre FROM facultades ORDER BY nombre COLLATE NOCASE")
+    facultades = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return facultades
+
+
+def guardar_carrera(nombre, facultad, carrera_id=None):
+    nombre = _normalizar_espacios(nombre)
+    facultad = _normalizar_espacios(facultad)
+    if not nombre:
+        raise ValueError("Indique el nombre de la carrera o PNF.")
+    if not facultad:
+        raise ValueError("Indique la facultad o categoría del programa.")
+
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        facultad_id = get_or_create_facultad(cursor, facultad)
+        if carrera_id is None:
+            cursor.execute(
+                """SELECT id FROM carreras
+                   WHERE LOWER(nombre) = LOWER(?) AND facultad_id = ?""",
+                (nombre, facultad_id),
+            )
+        else:
+            cursor.execute(
+                """SELECT id FROM carreras
+                   WHERE LOWER(nombre) = LOWER(?) AND facultad_id = ? AND id != ?""",
+                (nombre, facultad_id, carrera_id),
+            )
+        duplicada = cursor.fetchone()
+        if duplicada:
+            raise ValueError("Ya existe una carrera con ese nombre en esa facultad.")
+
+        if carrera_id is None:
+            carrera_id = get_or_create_carrera(cursor, nombre, facultad_id)
+        else:
+            cursor.execute(
+                "UPDATE carreras SET nombre = ?, facultad_id = ? WHERE id = ?",
+                (nombre, facultad_id, carrera_id),
+            )
+            if cursor.rowcount == 0:
+                raise ValueError("La carrera seleccionada ya no existe.")
+        conn.commit()
+        return carrera_id
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def get_or_create_profesor(cursor, nombre, cedula="", email="", condicion="Contratado/a", mencion=""):
@@ -683,15 +1170,31 @@ def registrar_ficha_docente(datos):
 
         carreras_cache = {}
         for indice, item in enumerate(materias_validas, 1):
-            carrera_full = item["carrera"]
-            if item["mencion"]:
-                carrera_full = f"{item['carrera']} - {item['mencion']}"
-            criterio_carrera = ""
-            admin_like = any(k in carrera_full.upper() for k in (
+            mencion = item["mencion"].strip()
+            if mencion.lower() in ("", "sin mencion", "sin mención"):
+                mencion = ""
+            carrera_full = f"{item['carrera']} - {mencion}" if mencion else item["carrera"]
+            carrera_normalizada = carrera_full.upper()
+            pnf_like = carrera_normalizada.startswith("PNF ") or "PROGRAMA NACIONAL DE FORMACION" in carrera_normalizada
+            admin_like = any(k in carrera_normalizada for k in (
                 "ADMINISTR", "RECURSOS HUMANOS", "RECURSOS MATERIALES", "MERCADEO",
                 "INFORMÁTICA", "ORGANIZACIÓN Y SISTEMAS", "OYS",
             ))
-            facultad_id = facultad_admin if admin_like else facultad_educacion
+            facultad_id = None
+            for nombre_carrera in dict.fromkeys((carrera_full, item["carrera"])):
+                cursor.execute(
+                    "SELECT facultad_id FROM carreras WHERE LOWER(nombre) = LOWER(?) ORDER BY id LIMIT 1",
+                    (nombre_carrera,),
+                )
+                carrera_existente = cursor.fetchone()
+                if carrera_existente:
+                    facultad_id = carrera_existente["facultad_id"]
+                    break
+            if facultad_id is None:
+                if pnf_like:
+                    facultad_id = get_or_create_facultad(cursor, FACULTAD_PNF)
+                else:
+                    facultad_id = facultad_admin if admin_like else facultad_educacion
             if carrera_full not in carreras_cache:
                 carreras_cache[carrera_full] = get_or_create_carrera(cursor, carrera_full, facultad_id)
             carrera_id = carreras_cache[carrera_full]
@@ -1105,6 +1608,8 @@ def actualizar_ficha_docente_completa(nombre_actual, datos):
             nombre_materia = normal_texto(materia.get("materia"))
             carrera = normal_texto(materia.get("carrera"))
             mencion = normal_texto(materia.get("mencion"))
+            if mencion.lower() in ("", "sin mencion", "sin mención"):
+                mencion = ""
             if not nombre_materia or not carrera:
                 continue
 

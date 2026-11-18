@@ -1,4 +1,4 @@
-from database import get_connection, DIAS_ORDEN
+from database import get_connection, DIAS_ORDEN, BLOQUES_HORARIOS
 
 
 def hay_solapamiento(h_ini1, h_fin1, h_ini2, h_fin2):
@@ -233,6 +233,306 @@ def generar_horarios_automaticos():
         "pendientes": pendientes,
         "mensajes": mensajes,
     }
+
+
+def autoasignar_ambientes_libres():
+    """Reubica clases con choque de ambiente sin cambiar día ni horario."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """SELECT a.id, a.profesor_id, a.salon_id, a.dia, a.hora_inicio, a.hora_fin,
+                      s.codigo AS salon_codigo, ca.salon_preferido
+               FROM asignaciones_horario a
+               JOIN salones s ON s.id = a.salon_id
+               LEFT JOIN carga_academica ca ON ca.id = a.carga_id
+               ORDER BY a.dia, a.hora_inicio, a.hora_fin, a.id"""
+        )
+        asignaciones = [dict(row) for row in cursor.fetchall()]
+        cursor.execute("SELECT id, codigo FROM salones ORDER BY id")
+        salones = [dict(row) for row in cursor.fetchall()]
+        if not asignaciones or not salones:
+            return {
+                "reasignados": 0,
+                "conflictos_ambiente": 0,
+                "conflictos_docente": 0,
+                "mensajes": [],
+            }
+
+        mapa_salon_codigo = {salon["id"]: salon["codigo"] for salon in salones}
+        for asignacion in asignaciones:
+            asignacion["salon_id_final"] = asignacion["salon_id"]
+
+        for _ in range(len(asignaciones) + 1):
+            hubo_cambio = False
+            por_salon = {}
+            for asignacion in asignaciones:
+                por_salon.setdefault(asignacion["salon_id_final"], []).append(asignacion)
+
+            for asignacion in asignaciones:
+                salon_id_actual = asignacion["salon_id_final"]
+                codigo_actual = mapa_salon_codigo.get(salon_id_actual, asignacion["salon_codigo"])
+                if es_ambiente_compartible(codigo_actual):
+                    continue
+
+                colisionada = any(
+                    otra["id"] != asignacion["id"]
+                    and otra["id"] < asignacion["id"]
+                    and otra["dia"] == asignacion["dia"]
+                    and hay_solapamiento(
+                        asignacion["hora_inicio"],
+                        asignacion["hora_fin"],
+                        otra["hora_inicio"],
+                        otra["hora_fin"],
+                    )
+                    for otra in por_salon.get(salon_id_actual, [])
+                )
+                if not colisionada:
+                    continue
+
+                preferido = (asignacion["salon_preferido"] or "").strip().casefold()
+                candidatos = sorted(
+                    (salon for salon in salones if salon["id"] != salon_id_actual),
+                    key=lambda salon: (
+                        0 if salon["codigo"].casefold() == preferido and preferido else 1,
+                        1 if es_ambiente_compartible(salon["codigo"]) else 0,
+                        salon["id"],
+                    ),
+                )
+
+                nuevo_salon_id = None
+                for candidato in candidatos:
+                    if es_ambiente_compartible(candidato["codigo"]):
+                        libre = True
+                    else:
+                        libre = not any(
+                            otra["id"] != asignacion["id"]
+                            and otra["dia"] == asignacion["dia"]
+                            and hay_solapamiento(
+                                asignacion["hora_inicio"],
+                                asignacion["hora_fin"],
+                                otra["hora_inicio"],
+                                otra["hora_fin"],
+                            )
+                            for otra in por_salon.get(candidato["id"], [])
+                        )
+                    if libre:
+                        nuevo_salon_id = candidato["id"]
+                        break
+
+                if nuevo_salon_id is not None:
+                    if asignacion in por_salon.get(salon_id_actual, []):
+                        por_salon[salon_id_actual].remove(asignacion)
+                    asignacion["salon_id_final"] = nuevo_salon_id
+                    por_salon.setdefault(nuevo_salon_id, []).append(asignacion)
+                    hubo_cambio = True
+
+            if not hubo_cambio:
+                break
+
+        disponibilidad_profesor = {}
+        cursor.execute(
+            "SELECT profesor_id, dia, hora_inicio, hora_fin FROM disponibilidades"
+        )
+        for fila in cursor.fetchall():
+            disponibilidad_profesor.setdefault(fila["profesor_id"], []).append(
+                (fila["dia"], fila["hora_inicio"], fila["hora_fin"])
+            )
+
+        horarios_candidatos = [
+            (dia, inicio, fin)
+            for dia in DIAS_ORDEN
+            for inicio, fin in BLOQUES_HORARIOS
+        ]
+
+        por_salon_final = {}
+        for item in asignaciones:
+            por_salon_final.setdefault(item["salon_id_final"], []).append(item)
+
+        ids_horario_modificado = set()
+        ids_salon_modificado = set()
+
+        for indice, asignacion in enumerate(asignaciones):
+            for otra in asignaciones[indice + 1:]:
+                if (
+                    asignacion["profesor_id"] != otra["profesor_id"]
+                    or asignacion["dia"] != otra["dia"]
+                    or not hay_solapamiento(
+                        asignacion["hora_inicio"],
+                        asignacion["hora_fin"],
+                        otra["hora_inicio"],
+                        otra["hora_fin"],
+                    )
+                ):
+                    continue
+
+                # Intentar mover `otra`; si no encuentra horario/ambiente libre, intentar mover `asignacion`
+                for target, fijada in [(otra, asignacion), (asignacion, otra)]:
+                    duracion_actual = (
+                        int(target["hora_fin"][:2]) * 60 + int(target["hora_fin"][3:])
+                        - int(target["hora_inicio"][:2]) * 60
+                        - int(target["hora_inicio"][3:])
+                    )
+                    disponibles = disponibilidad_profesor.get(target["profesor_id"], [])
+                    candidatos_horario = list(disponibles)
+                    for h in horarios_candidatos:
+                        if h not in candidatos_horario:
+                            candidatos_horario.append(h)
+
+                    # Priorizar mismo día y bloques de disponibilidad registrada
+                    candidatos_horario.sort(
+                        key=lambda x: (
+                            0 if x[0] == target["dia"] else 1,
+                            0 if x in disponibles else 1,
+                        )
+                    )
+
+                    nuevo_horario = None
+                    for dia, inicio, fin in candidatos_horario:
+                        ini_min = int(inicio[:2]) * 60 + int(inicio[3:])
+                        fin_min = int(fin[:2]) * 60 + int(fin[3:])
+                        fin_candidato = f"{(ini_min + duracion_actual) // 60:02d}:{(ini_min + duracion_actual) % 60:02d}"
+                        if fin_min > ini_min and fin_min - ini_min < duracion_actual:
+                            continue
+
+                        choque_profesor = any(
+                            item["id"] != target["id"]
+                            and item["dia"] == dia
+                            and hay_solapamiento(inicio, fin_candidato, item["hora_inicio"], item["hora_fin"])
+                            for item in asignaciones
+                            if item["profesor_id"] == target["profesor_id"]
+                        )
+                        if choque_profesor:
+                            continue
+
+                        # Buscar ambiente libre para este horario
+                        salon_elegido_id = None
+                        s_act = target["salon_id_final"]
+                        cod_act = mapa_salon_codigo.get(s_act, "")
+                        if es_ambiente_compartible(cod_act):
+                            salon_elegido_id = s_act
+                        else:
+                            ocupado_act = any(
+                                item["id"] != target["id"]
+                                and item["dia"] == dia
+                                and hay_solapamiento(inicio, fin_candidato, item["hora_inicio"], item["hora_fin"])
+                                for item in por_salon_final.get(s_act, [])
+                            )
+                            if not ocupado_act:
+                                salon_elegido_id = s_act
+
+                        # Si el ambiente actual está ocupado en ese horario, probar otros salones registrados
+                        if salon_elegido_id is None:
+                            for s in salones:
+                                sid = s["id"]
+                                if sid == s_act:
+                                    continue
+                                if es_ambiente_compartible(s["codigo"]):
+                                    salon_elegido_id = sid
+                                    break
+                                ocupado_s = any(
+                                    item["id"] != target["id"]
+                                    and item["dia"] == dia
+                                    and hay_solapamiento(inicio, fin_candidato, item["hora_inicio"], item["hora_fin"])
+                                    for item in por_salon_final.get(sid, [])
+                                )
+                                if not ocupado_s:
+                                    salon_elegido_id = sid
+                                    break
+
+                        if salon_elegido_id is not None:
+                            nuevo_horario = (dia, inicio, fin_candidato, salon_elegido_id)
+                            break
+
+                    if nuevo_horario:
+                        dia_n, ini_n, fin_n, sal_n = nuevo_horario
+                        if target in por_salon_final.get(target["salon_id_final"], []):
+                            por_salon_final[target["salon_id_final"]].remove(target)
+                        target["dia"] = dia_n
+                        target["hora_inicio"] = ini_n
+                        target["hora_fin"] = fin_n
+                        if target["salon_id_final"] != sal_n:
+                            target["salon_id_final"] = sal_n
+                            ids_salon_modificado.add(target["id"])
+                        por_salon_final.setdefault(sal_n, []).append(target)
+                        ids_horario_modificado.add(target["id"])
+                        break
+
+        # Persistir reubicaciones de ambiente
+        cambios_salones = [
+            (asignacion["salon_id_final"], asignacion["id"])
+            for asignacion in asignaciones
+            if asignacion["salon_id_final"] != asignacion["salon_id"]
+        ]
+        if cambios_salones:
+            cursor.executemany(
+                "UPDATE asignaciones_horario SET salon_id = ? WHERE id = ?",
+                cambios_salones,
+            )
+
+        # Persistir reubicaciones de horario
+        if ids_horario_modificado:
+            cursor.executemany(
+                """UPDATE asignaciones_horario
+                   SET dia = ?, hora_inicio = ?, hora_fin = ?
+                   WHERE id = ?""",
+                [
+                    (item["dia"], item["hora_inicio"], item["hora_fin"], item["id"])
+                    for item in asignaciones
+                    if item["id"] in ids_horario_modificado
+                ],
+            )
+
+        conflictos_ambiente = 0
+        conflictos_docente = 0
+        for indice, asignacion in enumerate(asignaciones):
+            for otra in asignaciones[indice + 1:]:
+                if asignacion["dia"] != otra["dia"] or not hay_solapamiento(
+                    asignacion["hora_inicio"],
+                    asignacion["hora_fin"],
+                    otra["hora_inicio"],
+                    otra["hora_fin"],
+                ):
+                    continue
+                if asignacion["profesor_id"] == otra["profesor_id"]:
+                    conflictos_docente += 1
+                mismo_salon = (
+                    asignacion["salon_id_final"] == otra["salon_id_final"]
+                )
+                codigo_salon = mapa_salon_codigo.get(
+                    asignacion["salon_id_final"],
+                    asignacion["salon_codigo"],
+                )
+                if (
+                    mismo_salon
+                    and not es_ambiente_compartible(codigo_salon)
+                ):
+                    conflictos_ambiente += 1
+
+        conn.commit()
+        mensajes = []
+        if conflictos_ambiente:
+            mensajes.append(
+                f"Quedaron {conflictos_ambiente} colisión(es) de ambiente sin resolver: "
+                "no hay suficientes ambientes libres en esos horarios."
+            )
+        if conflictos_docente:
+            mensajes.append(
+                f"Quedaron {conflictos_docente} colisión(es) de docente; "
+                "se conserva el horario porque cambiar de ambiente no las resuelve."
+            )
+        total_reasignados = len(set([cid for _, cid in cambios_salones] + list(ids_horario_modificado)))
+        return {
+            "reasignados": total_reasignados,
+            "conflictos_ambiente": conflictos_ambiente,
+            "conflictos_docente": conflictos_docente,
+            "mensajes": mensajes,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def validar_cambio_manual(asignacion_id, salon_id, dia, hora_inicio, hora_fin):

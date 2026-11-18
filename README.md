@@ -18,16 +18,17 @@ Sistema interactivo de escritorio desarrollado en **Python (Flet + SQLite)** par
        - Desde el mismo diálogo se puede editar su lista de materias, una por línea.
      - **Reasignación manual de ambiente**: Botón directo en cada tarjeta de materia asignada para cambiar o fijar el salón de clases sin afectar el resto de las asignaciones.
      - Generador de reportes imprimibles HTML/PDF con opción de elegir **todos los profesores registrados** o **un (1) solo profesor** de la lista.
-   - **Carreras**: Panel de carreras registradas y su pensum de materias.
+   - **Carreras**: Panel para agregar y modificar carreras o PNF y su facultad/categoría. Incluye PNF Fisioterapia, Veterinaria y Agroecología, agrupados en «Programas Nacionales de Formación (PNF)»; al renombrar o reclasificar una carrera se conservan sus materias y horarios.
 
 2. **Gestión en Blanco o con Datos Demo**
-   - **Eliminar Datos Cargados**: Botón visible en el Dashboard y en la barra lateral que, tras una ventana de confirmación, elimina cursos, docentes, carreras y asignaciones cargadas, dejando intactos los ambientes y sus capacidades.
-   - **Modo en Blanco**: El sistema queda completamente limpio y listo para registrar los datos reales del nuevo período académico.
+   - **Eliminar Carga Académica**: Botón visible en el Dashboard y en la barra lateral que elimina las cargas académicas, disponibilidades y asignaciones actuales. Conserva carreras, materias de los planes de estudio, profesores y ambientes.
+   - **Modo en Blanco**: Se conserva el catálogo académico y los profesores registrados; quedan listas para una nueva carga académica las asignaciones, disponibilidades y horarios.
    - **Cargar Demo**: Botón para repoblar la base de datos con los datos de prueba y prototipo cuando sea necesario hacer demostraciones o pruebas de verificación.
    - Vistas con estados vacíos amigables cuando no hay registros aún.
 
 3. **Base de Datos SQL Ligera y Persistente (`SQLite`)**
-   - Almacenamiento automático en `universidad_horarios.db` ([`database.py`](database.py)) con índices relacionales optimizados.
+   - En ejecución desde Python, los datos se almacenan en `universidad_horarios.db` junto al proyecto. En el ejecutable Windows se guardan en `%LOCALAPPDATA%\UNESR\Horarios`, para no requerir permisos de escritura en la carpeta de instalación. Si se encuentra una base anterior junto al `.exe`, se copia a esa ubicación la primera vez sin modificar el original.
+   - El registro de errores de arranque del ejecutable se guarda en `%LOCALAPPDATA%\UNESR\Horarios\errores_inicio.log`.
 
 ---
 
@@ -190,7 +191,9 @@ El workflow **Compilar Ejecutables Multiplataforma** construye el paquete de esc
 
 El artefacto de Actions es temporal y puede caducar; para una versión estable se puede crear y publicar un tag `v*`, lo que genera un GitHub Release con los paquetes de Windows y Linux. Descarga el paquete aprobado y conserva la versión distribuida para facilitar soporte.
 
-El ejecutable de escritorio funciona localmente con SQLite y **no se conecta** al servidor PostgreSQL. Si varios profesores deben compartir los mismos datos, cada uno debe entrar por navegador a la URL del servidor; no se deben intercambiar copias de la base SQLite como mecanismo multiusuario.
+La distribución Windows se genera como **un único `.exe` con las dependencias incluidas**; no requiere instalar Python ni ejecutar `pip`. Al iniciarlo por primera vez crea su base SQLite y carpetas de datos en `%LOCALAPPDATA%\UNESR\Horarios`. El archivo `.bat` sigue disponible como lanzador compatible, pero no es necesario para abrir el sistema.
+
+El ejecutable de escritorio funciona localmente con SQLite y **no se conecta** al servidor PostgreSQL. Si varios profesores deben compartir los mismos datos, cada uno debe entrar por navegador a la URL del servidor; no se deben intercambiar copias de la base SQLite como mecanismo multiusuario. Para soporte de un fallo al abrir en Windows, ejecuta `iniciar_sistema.bat` y comparte el contenido de `errores_inicio.log` (sin incluir datos personales que no sean necesarios).
 
 ### Modo web local sin Docker
 

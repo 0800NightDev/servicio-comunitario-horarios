@@ -16,6 +16,7 @@ import unicodedata
 import webbrowser
 import base64
 import threading
+import traceback
 from datetime import datetime
 import flet as ft
 from typing import Dict, List, Optional, Tuple
@@ -23,6 +24,7 @@ from typing import Dict, List, Optional, Tuple
 from database import (
     BASE_DIR,
     DIAS_ORDEN,
+    BLOQUES_HORARIOS,
     init_db,
     get_connection,
     clear_all_data,
@@ -53,6 +55,10 @@ from database import (
     actualizar_ambiente_por_docente_materia,
     actualizar_ambiente_profesor,
     obtener_info_profesores_dict,
+    obtener_carreras,
+    obtener_materias_carrera,
+    guardar_carrera,
+    FACULTAD_PNF,
     marcar_iniciar_en_blanco,
     esta_en_modo_blanco,
 )
@@ -61,10 +67,21 @@ from parsers import (
     importar_docx,
     importar_txt,
 )
-from scheduler import generar_horarios_automaticos
+from scheduler import (
+    autoasignar_ambientes_libres,
+    generar_horarios_automaticos,
+    validar_cambio_manual,
+    hay_solapamiento,
+)
+
+RESOURCE_DIR = getattr(
+    sys,
+    "_MEIPASS",
+    os.path.dirname(os.path.abspath(__file__)),
+)
 
 # ── LOGO OFICIAL UNESR OPTIMIZADO ──
-LOGO_UNESR_PATH = os.path.join(BASE_DIR, "src", "UNESR.png")
+LOGO_UNESR_PATH = os.path.join(RESOURCE_DIR, "src", "UNESR.png")
 LOGO_UNESR_B64 = ""
 if os.path.isfile(LOGO_UNESR_PATH):
     try:
@@ -259,7 +276,22 @@ MENCIONES_DOCENTE = [
     "Docencia en Matemáticas",
     "Docencia en Idioma Inglés",
 ]
-CICLOS_ACADEMICOS = ["Introductorio", "General", "Electivo", "Profesional"]
+CICLOS_ACADEMICOS = [
+    "Introductorio", "General", "Electivo", "Profesional",
+    # Ciclos del PNFF (selección automática al elegir una materia de Fisioterapia)
+    "Trayecto Inicial (Ciclo Introductorio)",
+    "Primer Trayecto - Tramo I", "Primer Trayecto - Tramo II", "Primer Trayecto - Tramo III",
+    "Segundo Trayecto - Tramo I", "Segundo Trayecto - Tramo II", "Segundo Trayecto - Tramo III",
+    "Tercer Trayecto - Tramo I", "Tercer Trayecto - Tramo II", "Tercer Trayecto - Tramo III",
+    "Cuarto Trayecto - Tramo I", "Cuarto Trayecto - Tramo II", "Cuarto Trayecto - Tramo III",
+    # Ciclos del PNF en Medicina Veterinaria
+    "Trayecto Inicial",
+    "Trayecto I - Tramo I", "Trayecto I - Tramo II",
+    "Trayecto II - Tramo I", "Trayecto II - Tramo II",
+    "Trayecto III - Tramo I", "Trayecto III - Tramo II",
+    "Trayecto IV - Tramo I", "Trayecto IV - Tramo II",
+    "Trayecto V - Tramo I", "Trayecto V - Tramo II",
+]
 
 DOCENTES_BASE = [
     "ADA URSULINA BRITO CARDENAS","MARYELIN ALEJANDRA GONZALEZ",
@@ -414,9 +446,17 @@ def obtener_conflictos_horarios(entradas: List[Dict]) -> List[Dict]:
             if not motivos:
                 continue
             conf = {
+                "asignacion_a_id": entrada.get("asignacion_id"),
+                "asignacion_b_id": otra.get("asignacion_id"),
                 "dia": entrada.get("dia", ""),
+                "dia_a": entrada.get("dia", ""),
+                "dia_b": otra.get("dia", ""),
                 "inicio": inicio_a,
                 "fin": fin_a,
+                "inicio_a": inicio_a,
+                "fin_a": fin_a,
+                "inicio_b": inicio_b,
+                "fin_b": fin_b,
                 "docente_a": entrada.get("docente", ""),
                 "materia_a": entrada.get("materia", ""),
                 "ambiente_a": entrada.get("ambiente", ""),
@@ -434,8 +474,95 @@ def obtener_conflictos_horarios(entradas: List[Dict]) -> List[Dict]:
 def contar_conflictos_horarios(entradas: List[Dict]) -> int:
     return len(obtener_conflictos_horarios(entradas))
 
+
+def _buscar_asignacion_bd(asignacion_id=None, docente="", materia="", dia="", inicio="", fin="", ambiente=""):
+    """Busca una asignación horaria en SQLite por su ID o por coincidencia tolerante."""
+    conn = get_connection()
+    cur = conn.cursor()
+    if asignacion_id:
+        cur.execute("""
+            SELECT a.id AS asignacion_id, a.salon_id,
+                   a.dia, a.hora_inicio, a.hora_fin,
+                   p.nombre AS docente, m.nombre AS materia,
+                   s.codigo AS ambiente
+            FROM asignaciones_horario a
+            JOIN profesores p ON p.id = a.profesor_id
+            JOIN materias m ON m.id = a.materia_id
+            JOIN salones s ON s.id = a.salon_id
+            WHERE a.id = ?
+        """, (asignacion_id,))
+        row = cur.fetchone()
+        if row:
+            conn.close()
+            return dict(row)
+
+    cur.execute("""
+        SELECT a.id AS asignacion_id, a.salon_id,
+               a.dia, a.hora_inicio, a.hora_fin,
+               p.nombre AS docente, m.nombre AS materia,
+               s.codigo AS ambiente
+        FROM asignaciones_horario a
+        JOIN profesores p ON p.id = a.profesor_id
+        JOIN materias m ON m.id = a.materia_id
+        JOIN salones s ON s.id = a.salon_id
+        WHERE LOWER(p.nombre) = LOWER(?)
+    """, (str(docente).strip(),))
+    filas = [dict(r) for r in cur.fetchall()]
+    conn.close()
+
+    dia_norm = _sin_acentos(str(dia)).strip().upper()
+    mat_norm = _sin_acentos(str(materia)).strip().upper()
+    amb_norm = _sin_acentos(str(ambiente)).strip().upper()
+
+    for f in filas:
+        f_dia = _sin_acentos(str(f["dia"])).strip().upper()
+        f_mat = _sin_acentos(str(f["materia"])).strip().upper()
+        if f_dia == dia_norm and (f_mat == mat_norm or mat_norm in f_mat or f_mat in mat_norm):
+            if f["hora_inicio"] == inicio and f["hora_fin"] == fin:
+                return f
+
+    for f in filas:
+        f_dia = _sin_acentos(str(f["dia"])).strip().upper()
+        f_mat = _sin_acentos(str(f["materia"])).strip().upper()
+        if f_dia == dia_norm and (f_mat == mat_norm or mat_norm in f_mat or f_mat in mat_norm):
+            if hay_solapamiento(inicio, fin, f["hora_inicio"], f["hora_fin"]):
+                return f
+
+    for f in filas:
+        f_dia = _sin_acentos(str(f["dia"])).strip().upper()
+        f_amb = _sin_acentos(str(f["ambiente"])).strip().upper()
+        if f_dia == dia_norm and f_amb == amb_norm:
+            if hay_solapamiento(inicio, fin, f["hora_inicio"], f["hora_fin"]):
+                return f
+
+    for f in filas:
+        f_dia = _sin_acentos(str(f["dia"])).strip().upper()
+        if f_dia == dia_norm and hay_solapamiento(inicio, fin, f["hora_inicio"], f["hora_fin"]):
+            return f
+
+    return None
+
 def _mapear_carrera_id(nombre_carrera: str, facultad_nombre: str = "") -> str:
     nc = _sin_acentos(nombre_carrera)
+    pnf_clave = next(
+        (
+            clave for termino, clave in (
+                ("FISIOTERAPIA", "PNF_FISIOTERAPIA"),
+                ("VETERINARIA", "PNF_VETERINARIA"),
+                ("AGROECOLOGIA", "PNF_AGROECOLOGIA"),
+            )
+            if termino in nc
+        ),
+        None,
+    )
+    if pnf_clave:
+        if pnf_clave not in CARRERAS:
+            CARRERAS[pnf_clave] = {
+                "nombre": nombre_carrera.strip().title(),
+                "mencion": facultad_nombre.strip() or FACULTAD_PNF,
+                "color": PALETA_CARRERAS[len(CARRERAS) % len(PALETA_CARRERAS)],
+            }
+        return pnf_clave
     if "INICIAL" in nc or "INIC" in nc:
         return "EDUC_INIC"
     if "INTEGRAL" in nc or "INTEG" in nc:
@@ -464,6 +591,17 @@ def _mapear_carrera_id(nombre_carrera: str, facultad_nombre: str = "") -> str:
             "color": color,
         }
     return clave
+
+
+def _recargar_catalogo_carreras() -> None:
+    CARRERAS.clear()
+    CARRERAS.update({k: dict(v) for k, v in CARRERAS_BASE.items()})
+    MATERIAS.clear()
+    MATERIAS.update({k: [dict(m) for m in v] for k, v in MATERIAS_BASE.items()})
+    for carrera in obtener_carreras():
+        clave = _mapear_carrera_id(carrera["nombre"], carrera["facultad"])
+        CARRERAS[clave]["nombre"] = carrera["nombre"]
+        CARRERAS[clave]["mencion"] = carrera["facultad"]
 
 
 # ═══════════════════════════════════════════════════════
@@ -549,6 +687,7 @@ class Motor:
         am = "AM" if hora_int in (7, 8, 9, 10, 11) else "PM"
         e = {
             **datos,
+            "asignacion_id": datos.get("asignacion_id"),
             "dia": sl["dia"],
             "franja": sl["franja"],
             "ambiente": sl["ambiente"],
@@ -587,7 +726,23 @@ class Motor:
             conn = get_connection()
             cur = conn.cursor()
             ci = CARRERAS.get(e["carrera_id"], {"nombre": e["carrera_id"], "mencion": "General"})
-            fac_nombre = "Facultad de Ciencias de la Educación" if "EDUC" in e["carrera_id"] else "Facultad de Ciencias Económicas y Sociales"
+            carrera_registrada = next(
+                (
+                    carrera for carrera in obtener_carreras()
+                    if carrera["nombre"].casefold() == ci["nombre"].casefold()
+                ),
+                None,
+            )
+            if carrera_registrada:
+                fac_nombre = carrera_registrada["facultad"]
+            elif e["carrera_id"].startswith("PNF_"):
+                fac_nombre = FACULTAD_PNF
+            else:
+                fac_nombre = (
+                    "Facultad de Ciencias de la Educación"
+                    if "EDUC" in e["carrera_id"]
+                    else "Facultad de Ciencias Económicas y Sociales"
+                )
             fac_id = get_or_create_facultad(cur, fac_nombre)
             car_id = get_or_create_carrera(cur, ci["nombre"], fac_id)
             prof_id = get_or_create_profesor(cur, e["docente"])
@@ -636,6 +791,7 @@ class Motor:
                     """,
                     (row_c["id"], prof_id, mat_id, sal_id, dia_bd, h_ini, h_fin),
                 )
+                e["asignacion_id"] = cur.lastrowid
             conn.commit()
             conn.close()
         except Exception as ex:
@@ -648,6 +804,7 @@ class Motor:
         cur = conn.cursor()
         cur.execute("""
             SELECT
+                ah.id AS asignacion_id,
                 p.nombre AS docente,
                 m.nombre AS materia,
                 m.semestre AS ciclo,
@@ -696,6 +853,7 @@ class Motor:
                 ciclo_limpio = "INTRODUCTORIO"
 
             datos = {
+                "asignacion_id": r.get("asignacion_id"),
                 "carrera_id": cid,
                 "docente": r["docente"].strip().upper(),
                 "materia": r["materia"].strip().upper(),
@@ -771,6 +929,7 @@ ROWS_SEED = [
 def _seed_data(forzar_base: bool = False) -> Tuple[Motor, List[Dict]]:
     init_db()
     recargar_ambientes_desde_bd()
+    _recargar_catalogo_carreras()
     m = Motor()
     if not forzar_base:
         existentes = m.sincronizar_desde_sqlite()
@@ -779,16 +938,13 @@ def _seed_data(forzar_base: bool = False) -> Tuple[Motor, List[Dict]]:
             return m, existentes
         # Por defecto, el sistema se mantiene en blanco listo para registrar cursos nuevos
         marcar_iniciar_en_blanco(True)
-        CARRERAS.clear()
-        CARRERAS.update({k: dict(v) for k, v in CARRERAS_BASE.items()})
         recargar_ambientes_desde_bd()
         recargar_docentes_desde_bd()
         return m, []
 
     marcar_iniciar_en_blanco(False)
     clear_all_data(keep_salones=True)
-    CARRERAS.clear()
-    CARRERAS.update({k: dict(v) for k, v in CARRERAS_BASE.items()})
+    _recargar_catalogo_carreras()
     DOCENTES.clear()
     DOCENTES.extend(sorted(DOCENTES_BASE))
     recargar_ambientes_desde_bd()
@@ -816,7 +972,7 @@ def generar_reporte_html_imprimible(
     - tipo == 'profesor' : 2) Horario tipo calendario semanal (de TODOS los profesores o de 1 SOLO profesor).
     - tipo == 'completo' : Oferta Académica General + Calendarios de Profesores.
     """
-    carpeta = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reportes_imprimibles")
+    carpeta = os.path.join(BASE_DIR, "reportes_imprimibles")
     os.makedirs(carpeta, exist_ok=True)
     fecha_str = datetime.now().strftime("%d/%m/%Y %H:%M")
 
@@ -2218,37 +2374,50 @@ class App:
         def cerrar(ev=None):
             self._cerrar_modal(dlg)
 
+        campo_confirm = ft.TextField(
+            label="Escribe ELIMINAR para confirmar",
+            bgcolor=BG_IN,
+            border_color=BOR,
+            focused_border_color=RED,
+            border_radius=10,
+            autofocus=True,
+        )
+
         def confirmar_vaciado(ev=None):
+            if (campo_confirm.value or "").strip().upper() != "ELIMINAR":
+                campo_confirm.error_text = "Debes escribir ELIMINAR exactamente."
+                campo_confirm.update()
+                return
             self._cerrar_modal(dlg)
             marcar_iniciar_en_blanco(True)
             clear_all_data(keep_salones=True)
             self._all = []
             self.motor.limpiar_memoria()
-            DOCENTES.clear()
-            CARRERAS.clear()
-            CARRERAS.update({k: dict(v) for k, v in CARRERAS_BASE.items()})
-            MATERIAS.clear()
-            MATERIAS.update({k: [dict(m) for m in v] for k, v in MATERIAS_BASE.items()})
+            _recargar_catalogo_carreras()
             recargar_ambientes_desde_bd()
+            recargar_docentes_desde_bd()
             self.docente_calendario_sel = ""
-            self.ultimo_mensaje = "Datos cargados eliminados. El sistema quedó en blanco y listo para nuevos registros."
+            self.ultimo_mensaje = "Carga académica eliminada. Carreras, materias y profesores se conservaron."
             self._sb_refresh()
             self._mc_refresh()
-            self._mostrar_notificacion("Datos eliminados con éxito. El sistema quedó en blanco.", color=BLUE)
+            self._mostrar_notificacion("Carga académica eliminada. Carreras, materias y profesores conservados.", color=BLUE)
 
         dlg = ft.AlertDialog(
             modal=True,
             title=ft.Row([
                 ft.Icon(ft.Icons.WARNING_ROUNDED, color=RED, size=24),
-                ft.Text("¿Eliminar todos los datos cargados?", size=16, weight=ft.FontWeight.BOLD, color=TW),
+                ft.Text("¿Eliminar la carga académica?", size=16, weight=ft.FontWeight.BOLD, color=TW),
             ], spacing=8),
-            content=ft.Text(
-                "Esta acción eliminará todos los cursos, profesores, carreras cargadas y asignaciones actuales. "
-                "No se puede deshacer.\n\n"
-                "Los ambientes (salones), sus capacidades y la configuración del sistema se mantendrán intactos.",
-                size=13, color=TL
-            ),
-            actions=[
+content=ft.Column([
+                ft.Text(
+                    "Esta acción eliminará la carga académica, las disponibilidades y las asignaciones actuales. "
+                    "No se puede deshacer.\n\n"
+                    "Las carreras, sus materias, los profesores registrados, los ambientes y su configuración se mantendrán intactos.",
+                    size=13, color=TL
+                ),
+                campo_confirm,
+            ], tight=True, spacing=12),
+                        actions=[
                 ft.TextButton("Cancelar", on_click=cerrar),
                 ft.ElevatedButton(
                     "Sí, Eliminar Datos",
@@ -2341,7 +2510,7 @@ class App:
                 icon=ft.Icons.DELETE_SWEEP_ROUNDED,
                 icon_color=RED,
                 icon_size=18,
-                tooltip="Eliminar datos cargados",
+                tooltip="Eliminar carga académica",
                 on_click=self._dialogo_vaciar_sistema_en_blanco,
             )
 
@@ -2443,7 +2612,7 @@ class App:
         btn_eliminar_sb = ft.Container(
             content=ft.Row([
                 ft.Icon(ft.Icons.DELETE_SWEEP_ROUNDED, color=RED, size=14),
-                ft.Text("Eliminar datos cargados", color=RED, size=11, weight=ft.FontWeight.W_600),
+                ft.Text("Eliminar carga académica", color=RED, size=11, weight=ft.FontWeight.W_600),
             ], spacing=6, alignment=ft.MainAxisAlignment.CENTER),
             bgcolor=alpha_col(RED, 0.1),
             border=_ba(1, alpha_col(RED, 0.35)),
@@ -2452,7 +2621,7 @@ class App:
             margin=_ms(10, 3),
             on_click=self._dialogo_vaciar_sistema_en_blanco,
             ink=True,
-            tooltip="Elimina cursos, docentes y asignaciones cargadas",
+            tooltip="Elimina la carga académica y conserva carreras, materias y profesores",
         )
 
         def mrow(lbl, val, col):
@@ -2636,11 +2805,11 @@ class App:
         btn_eliminar_datos = ft.Container(
             content=ft.Row([
                 ft.Icon(ft.Icons.DELETE_SWEEP_ROUNDED, color=WHITE, size=16),
-                ft.Text("Eliminar Datos Cargados", color=WHITE, size=12, weight=ft.FontWeight.W_700)
+                ft.Text("Eliminar Carga Académica", color=WHITE, size=12, weight=ft.FontWeight.W_700)
             ], alignment=ft.MainAxisAlignment.CENTER, spacing=6),
             bgcolor=RED, border_radius=10, padding=_ps(14, 11),
             on_click=self._dialogo_vaciar_sistema_en_blanco, ink=True,
-            tooltip="Elimina los cursos, docentes y asignaciones cargadas (pide confirmación)",
+            tooltip="Elimina horarios y cargas académicas; conserva carreras, materias y profesores",
         )
 
         controles_sup = [
@@ -2687,7 +2856,26 @@ class App:
             ("16:25", "17:05"), ("17:10", "17:45"), ("17:45", "18:25"),
         ]
 
-        tf_docente = campo("Nombre y Apellidos del Docente", expand=True)
+        profesores_existentes = obtener_profesores()
+        opciones_docentes = []
+        datos_docentes = {}
+        for profesor in profesores_existentes:
+            cargas = obtener_cargas_docente(profesor["nombre"])
+            carreras_docente = list(dict.fromkeys(
+                carga["carrera"] for carga in cargas if carga.get("carrera")
+            ))
+            carreras_texto = ", ".join(carreras_docente) if carreras_docente else "Sin carrera registrada"
+            etiqueta = f"{profesor['nombre']} — {carreras_texto}"
+            opciones_docentes.append(ft.dropdown.Option(etiqueta))
+            datos_docentes[etiqueta] = profesor
+        tf_docente = ddrop(
+            "Nombre y Apellidos del Docente",
+            opciones_docentes,
+            editable=True,
+            enable_search=True,
+            enable_filter=True,
+            expand=True,
+        )
         tf_cedula = campo("Cédula", width=190)
         tf_correo = campo("Correo electrónico", expand=True)
         dd_condicion = ddrop(
@@ -2783,6 +2971,12 @@ class App:
         def agregar_fila_materia(valores=None):
             valores = valores or {}
             fila = {}
+            fila["materias_por_nombre"] = {}
+            carreras_catalogo = obtener_carreras()
+            carrera_ids = {
+                carrera["nombre"].casefold(): carrera["id"]
+                for carrera in carreras_catalogo
+            }
             dd_materia = ddrop(
                 "Materia que imparte",
                 [ft.dropdown.Option(nombre) for nombre in nombres_disponibles],
@@ -2804,6 +2998,53 @@ class App:
                 value=valores.get("carrera") or None,
                 expand=True,
             )
+
+            def actualizar_materias_carrera(e):
+                carrera_nombre = (e.control.value or "").strip()
+                carrera_id = carrera_ids.get(carrera_nombre.casefold())
+                materias_carrera = (
+                    obtener_materias_carrera(carrera_id)
+                    if carrera_id is not None
+                    else []
+                )
+                fila["materias_por_nombre"] = {
+                    materia["nombre"]: materia
+                    for materia in materias_carrera
+                }
+                dd_materia.options = [
+                    ft.dropdown.Option(
+                        materia["nombre"],
+                        (
+                            f"{materia['nombre']} - {materia['codigo']}"
+                            if materia["codigo"] else materia["nombre"]
+                        ),
+                    )
+                    for materia in materias_carrera
+                ]
+                dd_materia.value = None
+                if hasattr(dd_materia, "update"):
+                    dd_materia.update()
+
+            dd_carrera.on_change = actualizar_materias_carrera
+            if valores.get("carrera"):
+                carrera_id_inicial = carrera_ids.get(str(valores["carrera"]).casefold())
+                materias_iniciales = obtener_materias_carrera(carrera_id_inicial) if carrera_id_inicial else []
+                fila["materias_por_nombre"] = {
+                    materia["nombre"]: materia
+                    for materia in materias_iniciales
+                }
+                dd_materia.options = [
+                    ft.dropdown.Option(
+                        materia["nombre"],
+                        (
+                            f"{materia['nombre']} - {materia['codigo']}"
+                            if materia["codigo"] else materia["nombre"]
+                        ),
+                    )
+                    for materia in materias_iniciales
+                ]
+                if valores.get("materia"):
+                    dd_materia.value = valores["materia"]
             dd_mencion = ddrop(
                 "Mención",
                 [ft.dropdown.Option(m) for m in menciones_disponibles],
@@ -2850,6 +3091,19 @@ class App:
                 value=valores.get("compartidos", ""),
                 expand=True,
             )
+            def seleccionar_materia_carrera(e):
+                materia = fila["materias_por_nombre"].get(e.control.value)
+                if not materia:
+                    return
+                dd_codigo.value = materia["codigo"] or None
+                if materia["semestre"]:
+                    dd_ciclo.value = materia["semestre"]
+                tf_uc.value = str(materia["unidad_credito"] or "")
+                dd_codigo.update()
+                dd_ciclo.update()
+                tf_uc.update()
+
+            dd_materia.on_change = seleccionar_materia_carrera
             btn_eliminar = ft.IconButton(
                 icon=ft.Icons.DELETE_OUTLINE_ROUNDED,
                 icon_color=RED,
@@ -2869,8 +3123,8 @@ class App:
             })
             fila["root"] = ft.Container(
                 content=ft.Column([
-                    ft.Row([dd_materia, dd_ambiente, btn_eliminar], spacing=8),
-                    ft.Row([dd_carrera, dd_mencion], spacing=8),
+                    ft.Row([dd_carrera, dd_mencion, btn_eliminar], spacing=8),
+                    ft.Row([dd_materia, dd_ambiente], spacing=8),
                     ft.Row([dd_codigo, dd_ciclo, dd_seccion, tf_uc], spacing=8),
                     tf_compartidos,
                 ], spacing=8),
@@ -2883,6 +3137,40 @@ class App:
             materias_container.controls.append(fila["root"])
 
         agregar_fila_materia()
+
+        def docente_seleccionado(e):
+            valor = str(e.control.value or "").strip()
+            profesor = datos_docentes.get(valor)
+            if profesor is None:
+                coincidencia = next(
+                    (
+                        datos for etiqueta, datos in datos_docentes.items()
+                        if valor.casefold() in etiqueta.casefold()
+                    ),
+                    None,
+                )
+                profesor = coincidencia
+            if profesor is None:
+                return
+            tf_docente.value = profesor["nombre"]
+            tf_cedula.value = profesor.get("cedula", "")
+            tf_correo.value = profesor.get("email", "")
+            dd_condicion.value = profesor.get("condicion") or "Contratado/a"
+            cargas = obtener_cargas_docente(profesor["nombre"])
+            while filas_materia:
+                eliminar_fila(filas_materia[0])
+            if cargas:
+                for carga in cargas:
+                    agregar_fila_materia(carga)
+            else:
+                agregar_fila_materia()
+            materias_container.update()
+            tf_docente.update()
+            tf_cedula.update()
+            tf_correo.update()
+            dd_condicion.update()
+
+        tf_docente.on_change = docente_seleccionado
         btn_agregar = ft.OutlinedButton(
             "Agregar materia",
             icon=ft.Icons.ADD_ROUNDED,
@@ -3278,8 +3566,41 @@ class App:
                 ft.Text("Imprimir Oferta General (HTML / PDF)", color=BG_P, size=12, weight=ft.FontWeight.W_700),
             ], spacing=8),
             bgcolor=GRN, border_radius=10, padding=_ps(16, 12),
+            width=300,
+            height=44,
+            alignment=ft.alignment.center,
             on_click=lambda _: generar_reporte_html_imprimible(self._all, tipo="oferta"),
             ink=True,
+        )
+
+        def autoasignar_ambientes(e=None):
+            try:
+                resultado = autoasignar_ambientes_libres()
+                self._all = self.motor.sincronizar_desde_sqlite()
+                self._refrescar_vista_actual()
+                self._mostrar_notificacion(
+                    f"Ambientes reasignados: {resultado['reasignados']}. "
+                    f"Colisiones de ambiente pendientes: {resultado['conflictos_ambiente']}; "
+                    f"colisiones de docente: {resultado['conflictos_docente']}.",
+                    color=GRN if not resultado["conflictos_ambiente"] else ORG,
+                )
+                for mensaje in resultado["mensajes"]:
+                    print(f"[Autoasignar ambientes] {mensaje}")
+            except Exception as ex:
+                self._mostrar_notificacion(
+                    f"No se pudieron reasignar los ambientes: {ex}",
+                    color=RED,
+                )
+                print(f"[Error autoasignando ambientes]: {ex}")
+
+        btn_autoasignar = ft.ElevatedButton(
+            "Autoasignar a ambientes libres",
+            icon=ft.Icons.SWAP_HORIZ_ROUNDED,
+            bgcolor=GRN,
+            color=WHITE,
+            width=300,
+            height=44,
+            on_click=autoasignar_ambientes,
         )
 
         conflictos = contar_conflictos_horarios(self._all)
@@ -3301,9 +3622,207 @@ class App:
                 ft.Container(expand=True),
                 badge(f"{conflictos} CONFLICTOS", banner_color),
             ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            bgcolor=alpha_col(GRN, 0.15), border_radius=12,
-            padding=_pa(16), border=_ba(1, alpha_col(GRN, 0.4)),
+            bgcolor=alpha_col(banner_color, 0.15), border_radius=12,
+            padding=_pa(16), border=_ba(1, alpha_col(banner_color, 0.4)),
         )
+
+        conflictos_detalle = obtener_conflictos_horarios(self._all)
+        if conflictos_detalle:
+            filas_conflictos = []
+            for conflicto in conflictos_detalle:
+                asignacion_a = _buscar_asignacion_bd(
+                    asignacion_id=conflicto.get("asignacion_a_id"),
+                    docente=conflicto["docente_a"],
+                    materia=conflicto["materia_a"],
+                    dia=conflicto.get("dia_a", conflicto["dia"]),
+                    inicio=conflicto.get("inicio_a", conflicto["inicio"]),
+                    fin=conflicto.get("fin_a", conflicto["fin"]),
+                    ambiente=conflicto["ambiente_a"],
+                )
+                asignacion_b = _buscar_asignacion_bd(
+                    asignacion_id=conflicto.get("asignacion_b_id"),
+                    docente=conflicto["docente_b"],
+                    materia=conflicto["materia_b"],
+                    dia=conflicto.get("dia_b", conflicto.get("dia_a", conflicto["dia"])),
+                    inicio=conflicto.get("inicio_b", conflicto.get("inicio_a", conflicto["inicio"])),
+                    fin=conflicto.get("fin_b", conflicto.get("fin_a", conflicto["fin"])),
+                    ambiente=conflicto["ambiente_b"],
+                )
+
+                def abrir_modificacion(asignacion, conflicto_actual=conflicto):
+                    if not asignacion:
+                        self._mostrar_notificacion("No se pudo identificar la asignación.", color=RED)
+                        return
+
+                    dia_val = next(
+                        (d for d in DIAS_ORDEN if _sin_acentos(d).upper() == _sin_acentos(asignacion.get("dia", "")).upper()),
+                        asignacion.get("dia", DIAS_ORDEN[0]),
+                    )
+                    dd_dia_mod = ddrop(
+                        "Día",
+                        [ft.dropdown.Option(d) for d in DIAS_ORDEN],
+                        value=dia_val,
+                        width=180,
+                    )
+                    rango_inicial = f"{asignacion['hora_inicio']}-{asignacion['hora_fin']}"
+                    rangos_opciones = list(dict.fromkeys(
+                        [f"{inicio}-{fin}" for inicio, fin in BLOQUES_HORARIOS]
+                        + [rango_inicial],
+                    ))
+                    dd_horario_mod = ddrop(
+                        "Horario",
+                        [ft.dropdown.Option(rango) for rango in rangos_opciones],
+                        value=rango_inicial,
+                        width=180,
+                    )
+                    salones_opciones = obtener_salones()
+                    salon_actual_cod = str(asignacion.get("ambiente", "")).strip().upper()
+                    salon_val = next(
+                        (s["codigo"] for s in salones_opciones if str(s["codigo"]).strip().upper() == salon_actual_cod),
+                        salon_actual_cod or (salones_opciones[0]["codigo"] if salones_opciones else "P1-01"),
+                    )
+                    dd_salon_mod = ddrop(
+                        "Ambiente",
+                        [ft.dropdown.Option(str(salon["codigo"])) for salon in salones_opciones],
+                        value=salon_val,
+                        expand=True,
+                    )
+
+                    def cerrar_mod(e=None):
+                        self._cerrar_modal(dlg_mod)
+
+                    def guardar_mod(e=None):
+                        rango = (dd_horario_mod.value or rango_inicial).split("-")
+                        if len(rango) != 2:
+                            self._mostrar_notificacion("Seleccione un horario válido.", color=RED)
+                            return
+                        salon = next(
+                            (s for s in salones_opciones if s["codigo"] == dd_salon_mod.value),
+                            None,
+                        )
+                        if salon is None:
+                            self._mostrar_notificacion("Seleccione un ambiente válido.", color=RED)
+                            return
+                        valido, mensaje = validar_cambio_manual(
+                            asignacion["asignacion_id"],
+                            salon["id"],
+                            dd_dia_mod.value,
+                            rango[0].strip(),
+                            rango[1].strip(),
+                        )
+                        if not valido:
+                            self._mostrar_notificacion(mensaje, color=RED)
+                            return
+                        conn_mod = get_connection()
+                        cur_mod = conn_mod.cursor()
+                        cur_mod.execute(
+                            """UPDATE asignaciones_horario
+                               SET salon_id = ?, dia = ?, hora_inicio = ?, hora_fin = ?
+                               WHERE id = ?""",
+                            (
+                                salon["id"],
+                                dd_dia_mod.value,
+                                rango[0].strip(),
+                                rango[1].strip(),
+                                asignacion["asignacion_id"],
+                            ),
+                        )
+                        conn_mod.commit()
+                        conn_mod.close()
+                        self._cerrar_modal(dlg_mod)
+                        self._all = self.motor.sincronizar_desde_sqlite()
+                        self._refrescar_vista_actual()
+                        self._mostrar_notificacion("Asignación modificada sin choques.", color=GRN)
+
+                    dlg_mod = ft.AlertDialog(
+                        modal=True,
+                        bgcolor=BG_C,
+                        title=ft.Text(
+                            f"Modificar: {asignacion['docente']} - {asignacion['materia']}",
+                            color=TW,
+                            weight=ft.FontWeight.BOLD,
+                        ),
+                        content=ft.Container(
+                            content=ft.Column([dd_dia_mod, dd_horario_mod, dd_salon_mod], spacing=10),
+                            width=420,
+                        ),
+                        actions=[
+                            ft.TextButton("Cancelar", on_click=cerrar_mod),
+                            ft.ElevatedButton(
+                                "Guardar",
+                                icon=ft.Icons.SAVE_ROUNDED,
+                                bgcolor=BLUE,
+                                color=WHITE,
+                                on_click=guardar_mod,
+                            ),
+                        ],
+                        actions_alignment=ft.MainAxisAlignment.END,
+                    )
+                    self._abrir_modal(dlg_mod)
+
+                filas_conflictos.append(
+                    ft.Container(
+                        content=ft.Column([
+                            ft.Row([
+                                badge(conflicto["motivo"].upper(), RED),
+                                ft.Text(
+                                    f"{conflicto['dia']} | {conflicto['inicio']} - {conflicto['fin']}",
+                                    color=TW,
+                                    size=11,
+                                    weight=ft.FontWeight.W_700,
+                                ),
+                            ], spacing=8),
+                            ft.Text(
+                                f"{conflicto['docente_a']} · {conflicto['materia_a']} · Ambiente: {conflicto['ambiente_a']}",
+                                color=TL,
+                                size=11,
+                            ),
+                            ft.OutlinedButton(
+                                "Modificar asignación A",
+                                icon=ft.Icons.EDIT_CALENDAR_ROUNDED,
+                                on_click=lambda _, a=asignacion_a: abrir_modificacion(a),
+                            ),
+                            ft.Text(
+                                f"{conflicto['docente_b']} · {conflicto['materia_b']} · Ambiente: {conflicto['ambiente_b']}",
+                                color=TL,
+                                size=11,
+                            ),
+                            ft.OutlinedButton(
+                                "Modificar asignación B",
+                                icon=ft.Icons.EDIT_CALENDAR_ROUNDED,
+                                on_click=lambda _, b=asignacion_b: abrir_modificacion(b),
+                            ),
+                        ], spacing=4),
+                        bgcolor=BG_IN,
+                        border_radius=8,
+                        border=_ba(1, BOR),
+                        padding=_pa(10),
+                    )
+                )
+            panel_conflictos = ft.Container(
+                content=ft.Column([
+                    ft.Row([
+                        ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, color=RED, size=20),
+                        ft.Text("Colisiones de horario pendientes", color=TW, size=13, weight=ft.FontWeight.W_700),
+                    ], spacing=8),
+                    *filas_conflictos,
+                ], spacing=8),
+                bgcolor=BG_C,
+                border_radius=12,
+                border=_ba(1, alpha_col(RED, 0.35)),
+                padding=_pa(12),
+            )
+        else:
+            panel_conflictos = ft.Container(
+                content=ft.Row([
+                    ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, color=GRN, size=20),
+                    ft.Text("No quedan colisiones visibles.", color=GRN, size=12, weight=ft.FontWeight.W_700),
+                ], spacing=8),
+                bgcolor=alpha_col(GRN, 0.10),
+                border_radius=12,
+                border=_ba(1, alpha_col(GRN, 0.35)),
+                padding=_pa(12),
+            )
 
         filtros_fila = ft.Row(
             [dd_fc, dd_fd, dd_fdoc, dd_rpp, tf_busc],
@@ -3314,10 +3833,13 @@ class App:
             ft.Row([
                 titulo("Horarios Asignados", "1) Oferta academica general con profesores ordenados alfabeticamente."),
                 ft.Container(expand=True),
+                btn_autoasignar,
                 btn_print_oferta,
             ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             ft.Container(height=16),
             banner,
+            ft.Container(height=10),
+            panel_conflictos,
             ft.Container(height=14),
             filtros_fila,
             ft.Container(height=12),
@@ -4488,11 +5010,81 @@ class App:
     # ══════════════════════════════════════════════════
     #  VISTA CARRERAS (RESPONSIVE ROW SIMÉTRICO)
     # ══════════════════════════════════════════════════
+    def _dialogo_carrera(self, carrera_id: Optional[int] = None):
+        carrera = next(
+            (item for item in obtener_carreras() if item["id"] == carrera_id),
+            None,
+        ) if carrera_id is not None else None
+        nombre = campo(
+            "Nombre de la carrera o PNF",
+            value=carrera["nombre"] if carrera else "",
+            autofocus=True,
+        )
+        facultad = campo(
+            "Facultad o categoría",
+            value=carrera["facultad"] if carrera else "",
+        )
+
+        def cerrar(e=None):
+            self._cerrar_modal(dlg)
+
+        def guardar(e=None):
+            try:
+                guardar_carrera(
+                    nombre.value or "",
+                    facultad.value or "",
+                    carrera_id,
+                )
+            except ValueError as error:
+                self._mostrar_notificacion(str(error), color=ORG)
+                return
+            except Exception as error:
+                self._mostrar_notificacion(f"No se pudo guardar la carrera: {error}", color=RED)
+                return
+            self._cerrar_modal(dlg)
+            _recargar_catalogo_carreras()
+            self._all = self.motor.sincronizar_desde_sqlite()
+            self._sb_refresh()
+            self._mc_refresh()
+            self.page.update()
+            self._mostrar_notificacion("Carrera guardada correctamente.", color=GRN)
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            bgcolor=BG_C,
+            title=ft.Text(
+                "Modificar carrera o PNF" if carrera else "Agregar carrera o PNF",
+                color=TW,
+                weight=ft.FontWeight.BOLD,
+            ),
+            content=ft.Container(
+                content=ft.Column([nombre, facultad], tight=True, spacing=14),
+                width=420,
+            ),
+            actions=[
+                ft.TextButton("Cancelar", on_click=cerrar),
+                ft.ElevatedButton(
+                    "Guardar",
+                    icon=ft.Icons.SAVE_ROUNDED,
+                    bgcolor=BLUE,
+                    color=WHITE,
+                    on_click=guardar,
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self._abrir_modal(dlg)
+
     def _vc(self) -> ft.Control:
+        carreras_registradas = {
+            (item["nombre"], item["facultad"]): item["id"]
+            for item in obtener_carreras()
+        }
         paneles = []
         for kid, c in CARRERAS.items():
             col    = c["color"]
             asig   = [e for e in self._all if e["carrera_id"]==kid]
+            carrera_id = carreras_registradas.get((c["nombre"], c["mencion"]))
             pensum = MATERIAS.get(kid, [])
             if not pensum and asig:
                 mats_dict = {}
@@ -4536,6 +5128,13 @@ class App:
                             ft.Text(c["mencion"], color=TG, size=11, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
                         ], spacing=3, expand=True),
                         badge(f"{len(asig)} cursos", col),
+                        ft.IconButton(
+                            icon=ft.Icons.EDIT_ROUNDED,
+                            tooltip="Modificar carrera",
+                            icon_color=BLUE,
+                            visible=carrera_id is not None,
+                            on_click=lambda _, cid=carrera_id: self._dialogo_carrera(cid),
+                        ),
                     ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER), height=52),
                     divl(),
                     ft.Container(height=8),
@@ -4558,7 +5157,16 @@ class App:
             filas_carreras.append(ft.Container(height=16))
 
         return ft.Column([
-            titulo("Gestion de Carreras", "Carreras registradas y su pensum academico en el sistema."),
+            ft.Row([
+                titulo("Gestion de Carreras", "Carreras registradas y su pensum academico en el sistema."),
+                ft.ElevatedButton(
+                    "Agregar carrera o PNF",
+                    icon=ft.Icons.ADD_ROUNDED,
+                    bgcolor=BLUE,
+                    color=WHITE,
+                    on_click=lambda _: self._dialogo_carrera(),
+                ),
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             ft.Container(height=20),
             *filas_carreras,
             ft.Container(height=10),
@@ -4689,12 +5297,23 @@ def _parchar_flet_escritorio_interactivo() -> None:
 
 
 if __name__ == "__main__":
+    if "--smoke-test" in sys.argv:
+        if not os.path.isfile(LOGO_UNESR_PATH):
+            raise FileNotFoundError(f"No se encontró el logo empaquetado: {LOGO_UNESR_PATH}")
+        init_db()
+        raise SystemExit(0)
     _parchar_flet_escritorio_interactivo()
     try:
-        assets_dir = os.path.join(BASE_DIR, "src")
+        assets_dir = os.path.join(RESOURCE_DIR, "src")
         if "--web" in sys.argv or os.environ.get("FLET_VIEW") == "web":
             ft.app(target=main, view=ft.AppView.WEB_BROWSER, assets_dir=assets_dir)
         else:
             ft.app(target=main, assets_dir=assets_dir)
     except Exception as e:
-        print(f"Error al iniciar Flet: {e}")
+        log_path = os.path.join(BASE_DIR, "errores_inicio.log")
+        with open(log_path, "a", encoding="utf-8") as log:
+            log.write(f"\n[{datetime.now().isoformat(timespec='seconds')}] Error al iniciar Flet\n")
+            traceback.print_exc(file=log)
+        if sys.stderr:
+            print(f"Error al iniciar Flet. Revisa el registro: {log_path}", file=sys.stderr)
+        raise SystemExit(1) from e

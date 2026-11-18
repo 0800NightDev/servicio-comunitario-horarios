@@ -32,10 +32,18 @@ jobs:
 
       - name: Compilar con PyInstaller (Windows)
         run: |
-          pyinstaller --noconfirm --onedir --windowed `
+          pyinstaller --noconfirm --onefile --windowed `
             --name "SGHU_Universidad_Windows" `
             --add-data "src;src" `
+            --collect-all flet `
+            --collect-all flet_desktop `
+            --hidden-import openpyxl `
+            --hidden-import docx `
             SGHU_Universidad.py
+          & dist/SGHU_Universidad_Windows.exe --smoke-test
+          if ($LASTEXITCODE -ne 0) { throw "La prueba de inicio del ejecutable Windows falló." }
+          New-Item -ItemType Directory -Force dist/SGHU_Universidad_Windows | Out-Null
+          Copy-Item dist/SGHU_Universidad_Windows.exe dist/SGHU_Universidad_Windows/
           Copy-Item iniciar_sistema.bat dist/SGHU_Universidad_Windows/iniciar_sistema.bat
 
       - name: Comprimir paquete Windows

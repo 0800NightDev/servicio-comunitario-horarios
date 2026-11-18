@@ -9,6 +9,7 @@ from flask import (
     flash,
     send_file,
     Response,
+    jsonify,
 )
 from werkzeug.utils import secure_filename
 
@@ -21,12 +22,21 @@ from database import (
     get_or_create_profesor,
     get_or_create_materia,
     get_or_create_salon,
+    guardar_carrera,
+    FACULTAD_PNF,
+    obtener_facultades,
+    obtener_materias_carrera,
+    obtener_profesores_capacitados,
     registrar_ficha_docente,
     DIAS_ORDEN,
     BLOQUES_HORARIOS,
 )
 from parsers import importar_excel, importar_docx, importar_txt, parsear_disponibilidad
-from scheduler import generar_horarios_automaticos, validar_cambio_manual
+from scheduler import (
+    autoasignar_ambientes_libres,
+    generar_horarios_automaticos,
+    validar_cambio_manual,
+)
 from seed_demo import crear_archivos_ejemplo, cargar_demo_en_bd
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -106,6 +116,56 @@ def obtener_estadisticas():
     stats["conflictos"] = cursor.fetchone()["total"]
     conn.close()
     return stats
+
+
+def obtener_conflictos_horarios_detallados():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """SELECT
+               a.id AS asignacion_a,
+               b.id AS asignacion_b,
+               a.salon_id AS salon_a_id,
+               b.salon_id AS salon_b_id,
+               a.dia,
+               a.hora_inicio,
+               a.hora_fin,
+               pa.nombre AS profesor_a,
+               pb.nombre AS profesor_b,
+               ma.nombre AS materia_a,
+               mb.nombre AS materia_b,
+               sa.codigo AS ambiente_a,
+               sb.codigo AS ambiente_b
+           FROM asignaciones_horario a
+           JOIN asignaciones_horario b ON a.id < b.id
+             AND a.dia = b.dia
+             AND a.hora_inicio < b.hora_fin
+             AND b.hora_inicio < a.hora_fin
+           JOIN profesores pa ON pa.id = a.profesor_id
+           JOIN profesores pb ON pb.id = b.profesor_id
+           JOIN materias ma ON ma.id = a.materia_id
+           JOIN materias mb ON mb.id = b.materia_id
+           JOIN salones sa ON sa.id = a.salon_id
+           JOIN salones sb ON sb.id = b.salon_id
+           ORDER BY a.dia, a.hora_inicio, pa.nombre, pb.nombre"""
+    )
+    conflictos = []
+    for row in cursor.fetchall():
+        item = dict(row)
+        motivos = []
+        if item["profesor_a"].upper() == item["profesor_b"].upper():
+            motivos.append("docente")
+        ambiente_a = str(item["ambiente_a"] or "").upper()
+        ambiente_b = str(item["ambiente_b"] or "").upper()
+        compartibles = ("VIRTUAL", "COORDINAC", "ONLINE", "CANCHA", "AUDITORIO")
+        mismo_ambiente = ambiente_a == ambiente_b
+        if mismo_ambiente and not any(clave in ambiente_a for clave in compartibles):
+            motivos.append("ambiente")
+        if motivos:
+            item["motivos"] = " y ".join(motivos)
+            conflictos.append(item)
+    conn.close()
+    return conflictos
 
 
 def consultar_oferta_academica(facultad_id=None, carrera_id=None, profesor_id=None, salon_id=None, dia=None):
@@ -257,6 +317,23 @@ def nueva_carga():
     )
 
 
+@app.route("/api/materias-carrera/<int:carrera_id>")
+def materias_por_carrera(carrera_id):
+    return jsonify(obtener_materias_carrera(carrera_id))
+
+
+@app.route("/api/profesores-capacitados")
+def profesores_capacitados():
+    carrera_id_raw = request.args.get("carrera_id", "").strip()
+    materia = request.args.get("materia", "").strip()
+    busqueda = request.args.get("q", "").strip()
+    try:
+        carrera_id = int(carrera_id_raw) if carrera_id_raw else None
+    except ValueError:
+        carrera_id = None
+    return jsonify(obtener_profesores_capacitados(carrera_id, materia, busqueda))
+
+
 @app.route("/cargar-archivo", methods=["POST"])
 def cargar_archivo():
     archivo = request.files.get("archivo")
@@ -320,7 +397,7 @@ def cargar_demo():
 @app.route("/limpiar-datos", methods=["POST"])
 def limpiar_datos():
     clear_all_data(keep_salones=True)
-    flash("Se han limpiado todos los registros académicos y horarios.", "info")
+    flash("Se eliminó la carga académica y los horarios. Carreras, materias y profesores se conservaron.", "info")
     return redirect(url_for("index"))
 
 
@@ -466,6 +543,21 @@ def reorganizar():
     return redirect(request.referrer or url_for("oferta_general"))
 
 
+@app.route("/autoasignar-ambientes", methods=["POST"])
+def autoasignar_ambientes():
+    resultado = autoasignar_ambientes_libres()
+    if resultado["reasignados"]:
+        flash(
+            f"Ambientes reasignados automáticamente: {resultado['reasignados']}.",
+            "success",
+        )
+    elif not resultado["conflictos_ambiente"]:
+        flash("No se encontraron colisiones de ambiente que requieran reasignación.", "info")
+    for mensaje in resultado["mensajes"]:
+        flash(mensaje, "warning")
+    return redirect(request.referrer or url_for("oferta_general"))
+
+
 @app.route("/editar-asignacion", methods=["POST"])
 def editar_asignacion():
     asignacion_id = int(request.form.get("asignacion_id"))
@@ -535,6 +627,7 @@ def oferta_general():
         "oferta_general.html",
         asignaciones=asignaciones,
         por_facultad=por_facultad,
+        conflictos_horario=obtener_conflictos_horarios_detallados(),
         facultades=facultades,
         carreras=carreras,
         profesores=profesores,
@@ -574,17 +667,20 @@ def calendario_profesores():
         profesor_id = profesores[0]["id"]
 
     profesor_actual = None
-    disponibilidades = []
     if profesor_id:
         cursor.execute("SELECT id, nombre, cedula, email FROM profesores WHERE id = ?", (profesor_id,))
         row = cursor.fetchone()
         if row:
             profesor_actual = dict(row)
-        cursor.execute(
-            "SELECT dia, hora_inicio, hora_fin FROM disponibilidades WHERE profesor_id = ? ORDER BY hora_inicio",
-            (profesor_id,),
+
+    cursor.execute(
+        "SELECT profesor_id, dia, hora_inicio, hora_fin FROM disponibilidades ORDER BY dia, hora_inicio"
+    )
+    disponibilidades_por_profesor = {}
+    for r in cursor.fetchall():
+        disponibilidades_por_profesor.setdefault(r["profesor_id"], set()).add(
+            f"{r['dia']}|{r['hora_inicio']}|{r['hora_fin']}"
         )
-        disponibilidades = [dict(r) for r in cursor.fetchall()]
 
     conn.close()
 
@@ -603,13 +699,19 @@ def calendario_profesores():
                 "asignaciones": asig_p,
                 "rangos_horas": rh,
                 "matriz": mat,
+                "disponibilidad": disponibilidades_por_profesor.get(p["id"], set()),
             })
+
+    disponibilidad_actual = disponibilidades_por_profesor.get(profesor_id, set()) if profesor_id else set()
 
     return render_template(
         "calendario_profesores.html",
         profesores=profesores,
         profesor_actual=profesor_actual,
-        disponibilidades=disponibilidades,
+        disponibilidad_actual=disponibilidad_actual,
+        disponibilidades_por_profesor=disponibilidades_por_profesor,
+        dias_carga=DIAS_CARGA,
+        franjas_carga=FRANJAS_CARGA,
         asignaciones=asignaciones,
         rangos_horas=rangos_horas,
         matriz=matriz,
@@ -672,7 +774,22 @@ def carreras():
            FROM carreras c
            JOIN facultades f ON f.id = c.facultad_id
            LEFT JOIN materias m ON m.carrera_id = c.id
-           ORDER BY f.nombre, c.nombre, m.semestre, m.nombre"""
+           ORDER BY f.nombre, c.nombre,
+             CASE
+               WHEN LOWER(m.semestre) LIKE 'introduct%' THEN 1
+               WHEN LOWER(m.semestre) LIKE 'trayecto inicial%' THEN 1
+               WHEN LOWER(m.semestre) LIKE 'general%' THEN 2
+               WHEN LOWER(m.semestre) LIKE 'elect%' THEN 3
+               WHEN LOWER(m.semestre) LIKE 'profes%' THEN 4
+               WHEN LOWER(m.semestre) LIKE 'primer trayecto%' OR LOWER(m.semestre) LIKE 'trayecto i %' OR LOWER(m.semestre) LIKE 'trayecto i -%' THEN 5
+               WHEN LOWER(m.semestre) LIKE 'segundo trayecto%' OR LOWER(m.semestre) LIKE 'trayecto ii%' THEN 6
+               WHEN LOWER(m.semestre) LIKE 'tercer trayecto%' OR LOWER(m.semestre) LIKE 'trayecto iii%' THEN 7
+               WHEN LOWER(m.semestre) LIKE 'cuarto trayecto%' OR LOWER(m.semestre) LIKE 'trayecto iv%' THEN 8
+               WHEN LOWER(m.semestre) LIKE 'trayecto v%' THEN 9
+               ELSE 10
+             END,
+             m.semestre COLLATE NOCASE,
+             m.nombre COLLATE NOCASE"""
     )
     filas = [dict(row) for row in cursor.fetchall()]
     conn.close()
@@ -696,7 +813,36 @@ def carreras():
                     "semestre": fila["semestre"],
                 }
             )
-    return render_template("carreras.html", carreras=list(por_carrera.values()))
+    return render_template(
+        "carreras.html",
+        carreras=list(por_carrera.values()),
+        facultad_pnf=FACULTAD_PNF,
+        facultades=obtener_facultades(),
+    )
+
+
+@app.route("/carreras/guardar", methods=["POST"])
+def guardar_carrera_web():
+    carrera_id_raw = request.form.get("carrera_id", "").strip()
+    try:
+        carrera_id = int(carrera_id_raw) if carrera_id_raw else None
+    except ValueError:
+        flash("La carrera seleccionada no es válida.", "danger")
+        return redirect(url_for("carreras"))
+    try:
+        guardar_carrera(
+            request.form.get("nombre", ""),
+            request.form.get("facultad", ""),
+            carrera_id,
+        )
+    except ValueError as error:
+        flash(str(error), "warning")
+        return redirect(url_for("carreras"))
+    except Exception as error:
+        flash(f"No se pudo guardar la carrera: {error}", "danger")
+        return redirect(url_for("carreras"))
+    flash("Carrera guardada correctamente.", "success")
+    return redirect(url_for("carreras"))
 
 
 @app.route("/reporte-imprimible")

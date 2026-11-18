@@ -394,6 +394,110 @@ def procesar_filas_datos(filas, nombre_hoja=""):
     return {"insertados": insertados, "errores": errores}
 
 
+def detectar_plan_estudios(filas):
+    texto = "\n".join(
+        str(cell).strip()
+        for fila in filas
+        for cell in fila
+        if cell is not None
+    ).upper()
+    tiene_plan = "PLAN DE ESTUDIOS" in texto
+    tiene_codigo_nombre = any(
+        normalizar_texto(str(fila[0] if len(fila) > 0 else "")) in ("codigo", "código")
+        and any(
+            "nombre del curso" in normalizar_texto(str(cell))
+            for cell in fila[1:]
+            if cell is not None
+        )
+        for fila in filas
+    )
+    tiene_ciclos = any(
+        "CICLO " in str(cell).upper()
+        for fila in filas
+        for cell in fila
+        if cell is not None
+    )
+    return tiene_plan and tiene_codigo_nombre and tiene_ciclos
+
+
+def importar_plan_estudios(filas, nombre_hoja=""):
+    conn = get_connection()
+    cursor = conn.cursor()
+    carrera_nombre = ""
+    facultad_nombre = ""
+    ciclo_actual = "General"
+    insertados = 0
+    errores = []
+
+    try:
+        for fila in filas:
+            valores = ["" if cell is None else str(cell).strip() for cell in fila]
+            linea = " ".join(valor for valor in valores if valor)
+            linea_normalizada = normalizar_texto(linea)
+
+            if not carrera_nombre:
+                if "mencion" in linea_normalizada or "educacion inicial" in linea_normalizada or "educacion integral" in linea_normalizada:
+                    carrera_nombre = re.sub(r"\s+", " ", linea).strip()
+                    if "mencion" in linea_normalizada:
+                        facultad_nombre = "Facultad de Educación" if "educacion" in linea_normalizada or "docencia" in linea_normalizada else "Facultad de Administración"
+                    else:
+                        facultad_nombre = "Facultad de Educación"
+
+            ciclo_match = re.match(r"CICLO\s+(INTRODUCTORIO|GENERAL|PROFESIONAL|ELECTIVO)", linea.upper())
+            if ciclo_match:
+                ciclo_actual = ciclo_match.group(1).title()
+                continue
+
+            if len(valores) < 2:
+                continue
+            codigo = valores[0].strip()
+            materia = valores[1].strip()
+            unidad_credito = valores[2].strip() if len(valores) > 2 else ""
+
+            if (
+                not codigo
+                or not materia
+                or normalizar_texto(codigo) == "codigo"
+                or "nombre del curso" in normalizar_texto(materia)
+                or materia.upper().startswith("TOTAL ")
+            ):
+                continue
+            if not re.match(r"[A-Za-z0-9À-ÿ_-]+", codigo):
+                continue
+
+            if not carrera_nombre:
+                carrera_nombre = nombre_hoja.replace("_2024", "").replace("_", " ").strip()
+            if not facultad_nombre:
+                facultad_nombre = "Facultad de Educación" if nombre_hoja.upper().startswith("E") else "Facultad de Administración"
+
+            facultad_id = get_or_create_facultad(cursor, facultad_nombre)
+            carrera_id = get_or_create_carrera(cursor, carrera_nombre, facultad_id)
+            materia_id = get_or_create_materia(
+                cursor,
+                materia,
+                carrera_id,
+                codigo=codigo,
+                semestre=ciclo_actual,
+            )
+            unidades = int(unidad_credito) if unidad_credito.isdigit() else 0
+            cursor.execute(
+                """UPDATE materias
+                   SET codigo = ?, semestre = ?, unidad_credito = ?
+                   WHERE id = ?""",
+                (codigo, ciclo_actual, unidades, materia_id),
+            )
+            insertados += 1
+
+        conn.commit()
+    except Exception as error:
+        conn.rollback()
+        errores.append(f"{nombre_hoja}: {error}")
+    finally:
+        conn.close()
+
+    return {"insertados": insertados, "errores": errores}
+
+
 def importar_excel(filepath):
     """
     Procesa cada hoja del libro Excel de forma independiente para que las diferencias
@@ -410,7 +514,10 @@ def importar_excel(filepath):
             if any(cell is not None and str(cell).strip() != "" for cell in row):
                 filas.append(list(row))
         if filas:
-            res = procesar_filas_datos(filas, nombre_hoja=sheet)
+            if detectar_plan_estudios(filas):
+                res = importar_plan_estudios(filas, nombre_hoja=sheet)
+            else:
+                res = procesar_filas_datos(filas, nombre_hoja=sheet)
             total_insertados += res["insertados"]
             todos_errores.extend(res["errores"])
 
