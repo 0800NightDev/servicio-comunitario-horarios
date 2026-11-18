@@ -3,7 +3,8 @@
 
 <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
     <div>
-        <h4 class="fw-bold mb-1 text-primary"><i class="bi bi-table me-2"></i>1) Oferta Académica General de la Universidad</h4>
+        <div class="text-primary small fw-bold text-uppercase mb-1">Gestión académica</div>
+        <h2 class="fw-bold mb-1">Horarios</h2>
         <p class="text-muted small mb-0">
             Organizada por Facultad y con los profesores ordenados alfabéticamente. Puedes filtrar o editar cualquier salón/hora manualmente.
         </p>
@@ -76,7 +77,7 @@
 {% if not por_facultad %}
 <div class="alert alert-info text-center p-4">
     <i class="bi bi-info-circle fs-3 d-block mb-2"></i>
-    No hay horarios registrados con los filtros seleccionados. Ve al panel de inicio para cargar un archivo Excel, Word, TXT o los datos de demostración.
+    No hay horarios registrados con los filtros seleccionados. Ve a Nueva Carga para incorporar una planificación.
 </div>
 {% else %}
     {% for facultad_nombre, lista_clases in por_facultad.items() %}

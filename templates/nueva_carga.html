@@ -1,0 +1,178 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="mb-4">
+    <div class="text-primary small fw-bold text-uppercase mb-1">Registro académico</div>
+    <h2 class="fw-bold mb-1">Nueva Carga</h2>
+    <p class="text-muted mb-0">Incorpora docentes y materias al período. Elige registro individual o importación de una planificación.</p>
+</div>
+
+<div class="row g-4">
+    <div class="col-12">
+        <section class="card card-panel p-4 h-100">
+            <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
+                <div>
+                    <h5 class="fw-bold mb-1"><i class="bi bi-file-earmark-arrow-up text-primary me-2"></i>Importar planificación</h5>
+                    <p class="small text-muted mb-0">Carga varios docentes desde un archivo compatible.</p>
+                </div>
+                <form action="{{ url_for('cargar_demo') }}" method="POST" onsubmit="return confirm('La carga de demostración reemplaza los registros académicos actuales. ¿Deseas continuar?');">
+                    <button type="submit" class="btn btn-outline-secondary btn-sm">
+                        <i class="bi bi-magic me-1"></i> Cargar datos de ejemplo
+                    </button>
+                </form>
+            </div>
+            <p class="small text-muted">
+                Formatos admitidos: <strong>Excel (.xlsx)</strong>, <strong>Word (.docx)</strong>, <strong>Texto (.txt)</strong> y <strong>CSV (.csv)</strong>.
+                La generación de horarios considera disponibilidad, aulas y posibles conflictos.
+            </p>
+            <form action="{{ url_for('cargar_archivo') }}" method="POST" enctype="multipart/form-data" class="border rounded-3 bg-light p-3">
+                <div class="mb-3">
+                    <label class="form-label fw-semibold" for="archivo-planificacion">Archivo de planificación</label>
+                    <input type="file" id="archivo-planificacion" name="archivo" class="form-control" accept=".xlsx,.docx,.txt,.csv" required>
+                </div>
+                <div class="form-check mb-3">
+                    <input class="form-check-input" type="checkbox" name="limpiar_previo" value="si" id="chkLimpiar">
+                    <label class="form-check-label small" for="chkLimpiar">Reemplazar los registros académicos anteriores antes de importar</label>
+                    <div class="form-text">Los ambientes registrados se conservan.</div>
+                </div>
+                <button type="submit" class="btn btn-primary fw-semibold">
+                    <i class="bi bi-gear-wide-connected me-1"></i> Procesar archivo y generar horarios
+                </button>
+            </form>
+            <div class="border-top mt-4 pt-3">
+                <div class="small fw-semibold text-muted mb-2">Plantillas de referencia</div>
+                <div class="d-flex flex-wrap gap-2">
+                    <a href="{{ url_for('descargar_plantilla', formato='xlsx') }}" class="btn btn-outline-success btn-sm"><i class="bi bi-file-earmark-excel me-1"></i>Excel</a>
+                    <a href="{{ url_for('descargar_plantilla', formato='docx') }}" class="btn btn-outline-primary btn-sm"><i class="bi bi-file-earmark-word me-1"></i>Word</a>
+                    <a href="{{ url_for('descargar_plantilla', formato='txt') }}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-file-earmark-text me-1"></i>Texto</a>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <div class="col-12">
+        <section class="card card-panel p-4">
+            <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
+                <div>
+                    <h5 class="fw-bold mb-1"><i class="bi bi-person-plus text-primary me-2"></i>Ficha individual del docente</h5>
+                    <p class="small text-muted mb-0">Registra sus datos, una o más materias y la disponibilidad semanal por bloque.</p>
+                </div>
+            </div>
+            <form action="{{ url_for('agregar_manual') }}" method="POST" class="row g-3">
+                <input type="hidden" name="tipo_carga" value="ficha_docente">
+                <div class="col-lg-4">
+                    <label class="form-label small fw-semibold">Nombre y apellidos</label>
+                    <input type="text" name="docente" class="form-control" autocomplete="name" required>
+                </div>
+                <div class="col-lg-2">
+                    <label class="form-label small fw-semibold">Cédula</label>
+                    <input type="text" name="cedula" class="form-control" placeholder="V-12345678" required>
+                </div>
+                <div class="col-lg-4">
+                    <label class="form-label small fw-semibold">Correo electrónico</label>
+                    <input type="email" name="correo" class="form-control" autocomplete="email">
+                </div>
+                <div class="col-lg-2">
+                    <label class="form-label small fw-semibold">Condición docente</label>
+                    <select name="condicion" class="form-select">
+                        <option>Contratado/a</option><option>Ordinario/a</option><option>Otro</option>
+                    </select>
+                </div>
+
+                <div class="col-12 mt-4">
+                    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 border-bottom pb-2 mb-3">
+                        <div><h6 class="fw-bold mb-0">Materias / cargas académicas</h6><small class="text-muted">Agrega las asignaturas de este docente; los catálogos existentes sirven de sugerencia.</small></div>
+                        <button class="btn btn-outline-primary btn-sm" type="button" id="agregarMateria"><i class="bi bi-plus-lg me-1"></i>Agregar materia</button>
+                    </div>
+                    <datalist id="materiasRegistradas">{% for nombre in materias %}<option value="{{ nombre }}"></option>{% endfor %}</datalist>
+                    <datalist id="carrerasRegistradas">{% for carrera in carreras %}<option value="{{ carrera.nombre }}"></option>{% endfor %}</datalist>
+                    <datalist id="codigosRegistrados">{% for codigo in codigos %}<option value="{{ codigo }}"></option>{% endfor %}</datalist>
+                    <datalist id="ciclosRegistrados">{% for ciclo in ciclos %}<option value="{{ ciclo }}"></option>{% endfor %}</datalist>
+                    <div id="materiasContainer" class="d-grid gap-3"></div>
+                </div>
+
+                <div class="col-12 mt-4">
+                    <h6 class="fw-bold mb-1">Disponibilidad semanal</h6>
+                    <p class="small text-muted mb-2">Marca los bloques en los que el docente puede impartir clases.</p>
+                    <div class="table-responsive border rounded-3">
+                        <table class="table table-bordered table-sm text-center align-middle mb-0 availability-grid">
+                            <thead class="table-light">
+                                <tr><th class="text-start">Día</th>{% for inicio, fin in franjas_carga %}<th class="small text-nowrap">{{ inicio }}<br>{{ fin }}</th>{% endfor %}</tr>
+                            </thead>
+                            <tbody>
+                                {% for dia in dias_carga %}
+                                <tr><th class="text-start small">{{ dia }}</th>
+                                    {% for inicio, fin in franjas_carga %}
+                                    <td><input class="form-check-input m-0" type="checkbox" name="disponibilidad" value="{{ dia }}|{{ inicio }}|{{ fin }}" aria-label="{{ dia }} {{ inicio }} a {{ fin }}"></td>
+                                    {% endfor %}
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="col-12 d-flex justify-content-end mt-4">
+                    <button type="submit" class="btn btn-primary fw-semibold px-4">
+                        <i class="bi bi-check2-circle me-1"></i> Guardar ficha y generar horarios
+                    </button>
+                </div>
+            </form>
+        </section>
+    </div>
+</div>
+
+<template id="materiaTemplate">
+    <div class="card border bg-light subject-row">
+        <div class="card-body">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <span class="fw-semibold small subject-title">Materia</span>
+                <button type="button" class="btn btn-outline-danger btn-sm remove-subject" aria-label="Eliminar materia"><i class="bi bi-trash"></i></button>
+            </div>
+            <div class="row g-2">
+                <div class="col-lg-4"><label class="form-label small">Materia</label><input name="materia" class="form-control form-control-sm" list="materiasRegistradas" required></div>
+                <div class="col-lg-4"><label class="form-label small">Carrera</label><input name="carrera" class="form-control form-control-sm" list="carrerasRegistradas" required></div>
+                <div class="col-lg-4"><label class="form-label small">Ambiente preferido (opcional)</label><select name="ambiente" class="form-select form-select-sm"><option value="">Cualquiera disponible</option>{% for salon in salones %}<option value="{{ salon.codigo }}">{{ salon.codigo }}</option>{% endfor %}</select></div>
+                <div class="col-md-2"><label class="form-label small">Código</label><input name="codigo" class="form-control form-control-sm" list="codigosRegistrados"></div>
+                <div class="col-md-3"><label class="form-label small">Ciclo</label><input name="ciclo" class="form-control form-control-sm" list="ciclosRegistrados" value="1er Semestre"></div>
+                <div class="col-md-3"><label class="form-label small">Sección</label><input name="seccion" class="form-control form-control-sm" placeholder="10100" inputmode="numeric"></div>
+                <div class="col-md-2"><label class="form-label small">Unidades de crédito</label><input name="unidad_credito" class="form-control form-control-sm" inputmode="numeric"></div>
+                <div class="col-md-2"><label class="form-label small">Mención</label><input name="mencion" class="form-control form-control-sm"></div>
+                <div class="col-12"><label class="form-label small">Compartida con otras materias/secciones</label><input name="compartidos" class="form-control form-control-sm"></div>
+            </div>
+        </div>
+    </div>
+</template>
+
+<style>
+    .availability-grid { min-width: 1050px; }
+    .availability-grid th:first-child { min-width: 105px; }
+    .availability-grid .form-check-input { cursor: pointer; }
+</style>
+<script>
+    (() => {
+        const container = document.getElementById('materiasContainer');
+        const template = document.getElementById('materiaTemplate');
+        const addButton = document.getElementById('agregarMateria');
+        const updateTitles = () => {
+            container.querySelectorAll('.subject-row').forEach((row, index) => {
+                row.querySelector('.subject-title').textContent = `Materia ${index + 1}`;
+            });
+        };
+        const addSubject = () => {
+            const row = template.content.firstElementChild.cloneNode(true);
+            row.querySelector('.remove-subject').addEventListener('click', () => {
+                if (container.querySelectorAll('.subject-row').length > 1) {
+                    row.remove();
+                    updateTitles();
+                }
+            });
+            container.appendChild(row);
+            updateTitles();
+        };
+        addButton.addEventListener('click', addSubject);
+        addSubject();
+    })();
+</script>
+
+{% endblock %}

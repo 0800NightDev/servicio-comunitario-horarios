@@ -1,0 +1,179 @@
+name: Compilar Ejecutables Multiplataforma (Windows y Canaima / Debian)
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+    branches:
+      - 'colision-horarios'
+      - 'mejoras-layout'
+      - 'main'
+
+jobs:
+  build-windows:
+    name: Compilar para Windows (.exe)
+    runs-on: windows-latest
+    steps:
+      - name: Descargar codigo
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Compilar con PyInstaller (Windows)
+        run: |
+          pyinstaller --noconfirm --onedir --windowed `
+            --name "SGHU_Universidad_Windows" `
+            --add-data "src;src" `
+            SGHU_Universidad.py
+          Copy-Item iniciar_sistema.bat dist/SGHU_Universidad_Windows/iniciar_sistema.bat
+
+      - name: Comprimir paquete Windows
+        run: |
+          Compress-Archive -Path dist/SGHU_Universidad_Windows -DestinationPath dist/SGHU_Universidad_Windows.zip
+
+      - name: Subir artefacto Windows
+        uses: actions/upload-artifact@v4
+        with:
+          name: SGHU_Universidad_Windows
+          path: dist/SGHU_Universidad_Windows.zip
+
+  build-linux:
+    name: Compilar para Canaima / Debian / Linux
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Descargar codigo
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Compilar con PyInstaller (Linux)
+        run: |
+          pyinstaller --noconfirm --onedir --windowed \
+            --name "SGHU_Universidad_Linux" \
+            --add-data "src:src" \
+            SGHU_Universidad.py
+
+      - name: Empaquetar y comprimir para Linux / Canaima
+        run: |
+          tar -czvf dist/SGHU_Universidad_Linux_Canaima.tar.gz -C dist SGHU_Universidad_Linux
+
+      - name: Subir artefacto Linux
+        uses: actions/upload-artifact@v4
+        with:
+          name: SGHU_Universidad_Linux_Canaima
+          path: dist/SGHU_Universidad_Linux_Canaima.tar.gz
+
+  test-postgresql:
+    name: Probar backend PostgreSQL
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: horarios_test
+          POSTGRES_USER: horarios
+          POSTGRES_PASSWORD: test-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U horarios -d horarios_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - name: Descargar codigo
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Instalar dependencias del servidor
+        run: pip install -r requirements-server.txt
+
+      - name: Ejecutar pruebas
+        env:
+          TEST_DATABASE_URL: postgresql://horarios:test-password@localhost:5432/horarios_test
+        run: python -m unittest discover -s tests -v
+
+  test-docker-compose:
+    name: Validar despliegue Docker Compose
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar codigo
+        uses: actions/checkout@v4
+
+      - name: Configurar secretos de prueba
+        run: |
+          printf 'POSTGRES_PASSWORD=test-password\nFLASK_SECRET_KEY=test-secret-key\nWEB_PORT=5000\n' > .env
+
+      - name: Validar configuracion Docker Compose
+        run: docker compose config --quiet
+
+      - name: Construir e iniciar servicios
+        run: docker compose up --build -d
+
+      - name: Comprobar respuesta de la aplicacion
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:5000/ >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose logs web
+          exit 1
+
+  release:
+    name: Publicar GitHub Release Oficial
+    needs: [build-windows, build-linux, test-postgresql, test-docker-compose]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - name: Descargar artefacto Windows
+        uses: actions/download-artifact@v4
+        with:
+          name: SGHU_Universidad_Windows
+          path: release_assets
+
+      - name: Descargar artefacto Linux
+        uses: actions/download-artifact@v4
+        with:
+          name: SGHU_Universidad_Linux_Canaima
+          path: release_assets
+
+      - name: Crear GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release_assets/SGHU_Universidad_Windows.zip
+            release_assets/SGHU_Universidad_Linux_Canaima.tar.gz
+          name: Sistema de Gestión de Horarios Universitarios (UNESR) ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
